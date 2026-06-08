@@ -21,7 +21,7 @@ const result = await upload({
 
 console.log(result.id)
 console.log(result.uploader)
-console.log(result.cost)
+console.log(result.cost?.amount) // raw AO base units as a bigint
 ```
 
 Pinned uploader:
@@ -43,10 +43,7 @@ selection internally when `uploader` is omitted.
 ```ts
 import { discoverBundlers } from '@permaweb/bundlers'
 
-const bundlers = await discoverBundlers({
-  endpoint: 'https://push-9.forward.computer',
-  pid: 'Xv7dvev8_dJVwW7k_VGGdHpRqWpgSCgK4vzJmnBkg5M',
-})
+const bundlers = await discoverBundlers()
 ```
 
 Automatic selection can be narrowed from `upload()`:
@@ -81,7 +78,7 @@ through `@permaweb/aoconnect`.
 
 ### legacy bundlers
 
-Legacy bundlers are supported through `legacy_upload()`.it does not run HyperBEAM discovery or funding.
+Legacy bundlers are supported through `legacy_upload()`. It does not run HyperBEAM discovery or funding.
 
 ```ts
 import { ArweaveSigner, legacy_upload } from '@permaweb/bundlers'
@@ -117,4 +114,5 @@ pnpm run build
 ```
 
 ## License
+
 this repository is licensed under the [MIT License](./LICENSE)

@@ -4,6 +4,7 @@ export interface BundlerTag {
 }
 
 export interface UploadCost {
+  /** Raw token base-unit amount returned by Hyperbalance. */
   amount: bigint
   token: 'AO'
 }
