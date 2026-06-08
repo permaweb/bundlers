@@ -86,7 +86,7 @@ The SDK also re-exports `ArweaveSigner` as the ANS-104 signing primitive used
 by `upload()`. Auto-fund uses the same signer to create AO transfer messages
 through `@permaweb/aoconnect`.
 
-### legacy bundlers 
+### legacy bundlers
 
 Legacy bundlers are supported through `legacy_upload()`.it does not run HyperBEAM discovery or funding.
 
@@ -122,3 +122,6 @@ pnpm run typecheck
 pnpm test:run
 pnpm run build
 ```
+
+## License
+this repository is licensed under the [MIT License](./LICENSE)
