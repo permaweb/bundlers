@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { upload } from './upload.js'
+import { ArweaveSigner, upload } from './index.js'
 
 function testJwk(): Record<string, unknown> {
   const { privateKey } = generateKeyPairSync('rsa', {
@@ -44,7 +44,7 @@ describe('upload', () => {
       upload({
         data: 'hello',
         fetch: fetch as typeof globalThis.fetch,
-        jwk: testJwk(),
+        signer: new ArweaveSigner(testJwk()),
         tags: [{ name: 'Content-Type', value: 'text/plain' }],
         uploader: 'https://hyperbeam.test',
       }),

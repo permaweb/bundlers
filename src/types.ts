@@ -29,12 +29,20 @@ export interface UploadSelectionOptions {
   pid?: string
 }
 
+export interface UploadSigner {
+  ownerLength: number
+  publicKey: Uint8Array
+  signatureLength: number
+  signatureType: number
+  sign(message: Uint8Array): Promise<Uint8Array> | Uint8Array
+}
+
 export interface UploadOptions {
   autoFund?: boolean | UploadAutoFundOptions
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
-  jwk: Record<string, unknown>
   selection?: UploadSelectionOptions
+  signer: UploadSigner
   tags?: BundlerTag[]
   uploadPath?: string
   uploader?: string

@@ -1,7 +1,7 @@
 import { createHash, randomInt } from 'node:crypto'
 import { createRequire } from 'node:module'
 
-import { createDataItemSigner, message as aoMessage } from '@permaweb/aoconnect'
+import { message as aoMessage } from '@permaweb/aoconnect'
 import {
   AoTokenTransferAdapter,
   DEFAULT_AO_TOKEN_ID,
@@ -19,25 +19,27 @@ import type {
   UploadCost,
   UploadOptions,
   UploadResult,
+  UploadSigner,
 } from './types.js'
 
 const require = createRequire(import.meta.url)
-const { ArweaveSigner, DataItem, createData } =
-  require('@dha-team/arbundles') as {
-    ArweaveSigner: new (jwk: Record<string, unknown>) => unknown
-    DataItem: new (raw: Buffer) => { id: string | Uint8Array }
-    createData: (
-      data: Buffer,
-      signer: unknown,
-      opts?: { tags?: Array<{ name: string; value: string }> },
-    ) => {
-      getRaw: () => Uint8Array
-      id?: string
-      sign: (signer: unknown) => Promise<void>
-    }
+const { DataItem, createData } = require('@dha-team/arbundles') as {
+  DataItem: new (raw: Buffer) => { id: string | Uint8Array }
+  createData: (
+    data: Buffer,
+    signer: UploadSigner,
+    opts?: { tags?: Array<{ name: string; value: string }> },
+  ) => {
+    getRaw: () => Uint8Array
+    id?: string
+    sign: (signer: UploadSigner) => Promise<void>
   }
+}
 
 const ARWEAVE_GATEWAY = 'https://arweave.net'
+const ARWEAVE_OWNER_LENGTH = 512
+const ARWEAVE_SIGNATURE_LENGTH = 512
+const ARWEAVE_SIGNATURE_TYPE = 1
 const DEFAULT_HYPERBEAM_UPLOAD_PATH =
   '/~bundler@1.0/item?codec-device=ans104@1.0'
 
@@ -57,12 +59,12 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   if (options.selection?.pid) selectionOptions.pid = options.selection.pid
 
   const uploader = options.uploader ?? (await selectBundler(selectionOptions))
+  assertArweaveSigner(options.signer)
 
-  const signer = new ArweaveSigner(options.jwk)
-  const item = createData(toBuffer(options.data), signer, {
+  const item = createData(toBuffer(options.data), options.signer, {
     tags: options.tags ?? [],
   })
-  await item.sign(signer)
+  await item.sign(options.signer)
 
   const raw = Buffer.from(item.getRaw())
   const localId = item.id || toBase64Url(new DataItem(raw).id)
@@ -92,7 +94,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
       autoFund,
       fetch: fetchImpl,
       quote,
-      jwk: options.jwk,
+      signer: options.signer,
       uploader,
     })
   }
@@ -225,16 +227,6 @@ function toBase64Url(value: string | Uint8Array): string {
   return Buffer.from(value).toString('base64url')
 }
 
-function arweaveAddressFromJwk(jwk: Record<string, unknown>): string {
-  if (typeof jwk.n !== 'string') {
-    throw new TypeError('Arweave JWK is missing modulus field "n"')
-  }
-
-  return createHash('sha256')
-    .update(Buffer.from(jwk.n, 'base64url'))
-    .digest('base64url')
-}
-
 async function quoteUpload(options: {
   autoFund: UploadAutoFundOptions
   fetch: typeof fetch
@@ -273,8 +265,8 @@ async function quoteUpload(options: {
 async function ensureUploadCredit(options: {
   autoFund: UploadAutoFundOptions
   fetch: typeof fetch
-  jwk: Record<string, unknown>
   quote: Quote
+  signer: UploadSigner
   uploader: string
 }): Promise<void> {
   const ledgerId = options.autoFund.ledgerId ?? options.quote.ledgerId
@@ -290,8 +282,8 @@ async function ensureUploadCredit(options: {
   if (tokenId) profileOptions.tokenId = tokenId
 
   const profile = await discoverHyperbeamAoBundlerProfile(profileOptions)
-  const recipient = arweaveAddressFromJwk(options.jwk)
-  const signer = createDataItemSigner(options.jwk)
+  const recipient = arweaveAddressFromSigner(options.signer)
+  const signer = createAoDataItemSigner(options.signer)
   const adapter = new AoTokenTransferAdapter({
     async inferSender() {
       return recipient
@@ -340,6 +332,50 @@ async function ensureUploadCredit(options: {
     fetch: options.fetch,
     nodeUrl: options.uploader,
   }).ensureCreditAuto(request)
+}
+
+function assertArweaveSigner(signer: UploadSigner): void {
+  if (
+    signer.signatureType !== ARWEAVE_SIGNATURE_TYPE ||
+    signer.ownerLength !== ARWEAVE_OWNER_LENGTH ||
+    signer.signatureLength !== ARWEAVE_SIGNATURE_LENGTH
+  ) {
+    throw new TypeError(
+      'Only Arweave ANS-104 signers are supported. Use new ArweaveSigner(jwk).',
+    )
+  }
+}
+
+function arweaveAddressFromSigner(signer: UploadSigner): string {
+  return createHash('sha256')
+    .update(Buffer.from(signer.publicKey))
+    .digest('base64url')
+}
+
+function createAoDataItemSigner(
+  signer: UploadSigner,
+): (...args: unknown[]) => Promise<{ address: string; signature: Buffer }> {
+  const address = arweaveAddressFromSigner(signer)
+  const publicKey = Buffer.from(signer.publicKey)
+
+  return async (...args: unknown[]) => {
+    const [create, kind] = args
+    if (typeof create !== 'function') {
+      throw new TypeError('AO signer create callback is missing')
+    }
+    if (kind !== 'ans104') {
+      throw new Error(`signer kind unknown "${kind}"`)
+    }
+
+    const deepHash = (await create({
+      alg: 'rsa-v1_5-sha256',
+      publicKey,
+      type: ARWEAVE_SIGNATURE_TYPE,
+    })) as Uint8Array
+    const signature = await signer.sign(deepHash)
+
+    return { address, signature: Buffer.from(signature) }
+  }
 }
 
 async function postDataItem(

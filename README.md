@@ -15,12 +15,14 @@ The package exposes the HyperBEAM upload path through `upload()`:
 PermawebOS bundlers and selects a usable one automatically.
 
 ```ts
-import { upload } from '@permaweb/bundlers'
+import { ArweaveSigner, upload } from '@permaweb/bundlers'
+
+const signer = new ArweaveSigner(jwk)
 
 const result = await upload({
   autoFund: true,
   data: new TextEncoder().encode('hello'),
-  jwk,
+  signer,
   tags: [{ name: 'Content-Type', value: 'text/plain' }],
 })
 
@@ -35,7 +37,7 @@ Pinned uploader:
 await upload({
   autoFund: true,
   data,
-  jwk,
+  signer,
   tags,
   uploader: 'https://lapee.hyperzine.xyz',
 })
@@ -60,16 +62,29 @@ Automatic selection can be narrowed from `upload()`:
 await upload({
   autoFund: true,
   data,
-  jwk,
   selection: {
     endpoint: 'https://push-9.forward.computer',
     pid: 'Xv7dvev8_dJVwW7k_VGGdHpRqWpgSCgK4vzJmnBkg5M',
   },
+  signer,
   tags,
 })
 ```
 
-The upload API accepts an Arweave JWK.
+The upload API accepts an Arweave signer:
+
+```ts
+await upload({
+  autoFund: true,
+  data,
+  signer,
+  tags,
+})
+```
+
+The SDK also re-exports `ArweaveSigner` as the ANS-104 signing primitive used
+by `upload()`. Auto-fund uses the same signer to create AO transfer messages
+through `@permaweb/aoconnect`.
 
 ## Development
 
