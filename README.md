@@ -1,15 +1,8 @@
 # @permaweb/bundlers
 
-Permaweb bundler funding and ANS-104 upload SDK.
+[PermawebOS bundlers](https://ao.arweave.net/#/stake/bundle) funding and data upload SDK.
 
-The package exposes the HyperBEAM upload path through `upload()`:
-
-1. Select a usable PermawebOS bundler, unless an `uploader` URL is pinned.
-2. Check that the bundler can seed data to Arweave.
-3. Optionally top up local upload credit with `@permaweb/hyperbalance`.
-4. Post signed ANS-104 data items to HyperBEAM.
-
-## Current API
+## API
 
 `upload()` is the main entrypoint. If `uploader` is omitted, it discovers active
 PermawebOS bundlers and selects a usable one automatically.
