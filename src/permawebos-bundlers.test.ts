@@ -51,12 +51,29 @@ describe('discoverBundlers', () => {
       {
         address: 'node-b',
         owner: 'owner-b',
-        registeredAt: undefined,
         ring: 'permawebos-v0.1-gold',
         stake: '25000000000000',
-        stakedAt: undefined,
         url: 'https://lapee.hyperzine.xyz',
       },
     ])
   })
-}
+
+  it('uses the configured endpoint and pid', async () => {
+    const fetch = createFetch({ active: {}, registered: {} })
+
+    await discoverBundlers({
+      endpoint: 'https://push.example/',
+      fetch,
+      pid: 'staking-process',
+    })
+
+    expect(fetch).toHaveBeenCalledWith(
+      'https://push.example/staking-process/compute/active?require-codec=application/json&accept-bundle=true',
+      expect.any(Object),
+    )
+    expect(fetch).toHaveBeenCalledWith(
+      'https://push.example/staking-process/compute/registered?require-codec=application/json&accept-bundle=true',
+      expect.any(Object),
+    )
+  })
+})

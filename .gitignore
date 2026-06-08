@@ -3,4 +3,5 @@ dist
 coverage
 .DS_Store
 *.log
-
+.env
+wallet.json

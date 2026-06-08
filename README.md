@@ -1,29 +1,26 @@
 # @permaweb/bundlers
 
-Permaweb bundler discovery, funding, and ANS-104 upload SDK.
+Permaweb bundler funding and ANS-104 upload SDK.
 
-The package is intended to expose the reusable HyperBEAM upload path currently used by
-`permaweb-deploy`:
+The package exposes the HyperBEAM upload path through `upload()`:
 
-1. Discover active PermawebOS bundlers.
-2. Select a usable bundler.
-3. Check that the bundler can seed data to Arweave.
-4. Optionally top up local upload credit with `@permaweb/hyperbalance`.
-5. Post signed ANS-104 data items to HyperBEAM.
+1. Select a usable PermawebOS bundler, unless an `uploader` URL is pinned.
+2. Check that the bundler can seed data to Arweave.
+3. Optionally top up local upload credit with `@permaweb/hyperbalance`.
+4. Post signed ANS-104 data items to HyperBEAM.
 
-## Planned API
+## Current API
+
+`upload()` is the main entrypoint. If `uploader` is omitted, it discovers active
+PermawebOS bundlers and selects a usable one automatically.
 
 ```ts
-import { discoverBundlers, upload } from '@permaweb/bundlers'
-
-const bundlers = await discoverBundlers({
-  ring: 'permawebos-v0.1-gold',
-})
+import { upload } from '@permaweb/bundlers'
 
 const result = await upload({
   autoFund: true,
   data: new TextEncoder().encode('hello'),
-  signer,
+  jwk,
   tags: [{ name: 'Content-Type', value: 'text/plain' }],
 })
 
@@ -38,11 +35,41 @@ Pinned uploader:
 await upload({
   autoFund: true,
   data,
-  signer,
+  jwk,
   tags,
   uploader: 'https://lapee.hyperzine.xyz',
 })
 ```
+
+Apps can call the discovery helper directly when they need to inspect available
+bundlers without uploading. Uploads do not need this step; `upload()` runs
+selection internally when `uploader` is omitted.
+
+```ts
+import { discoverBundlers } from '@permaweb/bundlers'
+
+const bundlers = await discoverBundlers({
+  endpoint: 'https://push-9.forward.computer',
+  pid: 'Xv7dvev8_dJVwW7k_VGGdHpRqWpgSCgK4vzJmnBkg5M',
+})
+```
+
+Automatic selection can be narrowed from `upload()`:
+
+```ts
+await upload({
+  autoFund: true,
+  data,
+  jwk,
+  selection: {
+    endpoint: 'https://push-9.forward.computer',
+    pid: 'Xv7dvev8_dJVwW7k_VGGdHpRqWpgSCgK4vzJmnBkg5M',
+  },
+  tags,
+})
+```
+
+The upload API accepts an Arweave JWK.
 
 ## Development
 
@@ -52,4 +79,3 @@ pnpm run typecheck
 pnpm test:run
 pnpm run build
 ```
-

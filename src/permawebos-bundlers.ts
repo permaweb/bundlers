@@ -1,8 +1,11 @@
-export const DEFAULT_PERMAWEBOS_BUNDLER_GATEWAY = 'https://push-9.forward.computer'
-export const DEFAULT_PERMAWEBOS_BUNDLER_STAKING_PROCESS =
+export const DEFAULT_PERMAWEBOS_BUNDLER_ENDPOINT =
+  'https://push-9.forward.computer'
+export const DEFAULT_PERMAWEBOS_BUNDLER_STAKING_PROCESS_ID =
   'Xv7dvev8_dJVwW7k_VGGdHpRqWpgSCgK4vzJmnBkg5M'
 
-const EXCLUDED_PERMAWEBOS_BUNDLER_URLS = new Set(['https://dev-1.forward.computer'])
+const EXCLUDED_PERMAWEBOS_BUNDLER_URLS = new Set([
+  'https://dev-1.forward.computer',
+])
 
 export interface ActivePermawebOSBundler {
   address: string
@@ -15,10 +18,9 @@ export interface ActivePermawebOSBundler {
 }
 
 export interface DiscoverBundlersOptions {
+  endpoint?: string
   fetch?: FetchLike
-  gateway?: string
-  processId?: string
-  ring?: string
+  pid?: string
 }
 
 type FetchLike = (
@@ -60,7 +62,7 @@ export async function discoverBundlers(
 
       const activeRecord = record as ActiveRecord
       const ring = normalizeScalar(activeRecord.ring)
-      if (!ring || (options.ring && ring !== options.ring)) return []
+      if (!ring) return []
 
       const address = getBundlerAddress(activeRecord)
       if (!address) return []
@@ -68,20 +70,21 @@ export async function discoverBundlers(
       const registeredRecord = isRecord(registered[address])
         ? (registered[address] as RegisteredRecord)
         : undefined
-      const url = normalizeBundlerUrl(normalizeScalar(registeredRecord?.location))
+      const url = normalizeBundlerUrl(
+        normalizeScalar(registeredRecord?.location),
+      )
       if (!url || isExcludedBundlerUrl(url)) return []
 
-      return [
-        {
-          address,
-          owner,
-          registeredAt: normalizeTimestamp(registeredRecord?.registered_at),
-          ring,
-          stake: normalizeScalar(activeRecord.stake) || undefined,
-          stakedAt: normalizeTimestamp(activeRecord.staked_at),
-          url,
-        },
-      ]
+      const bundler: ActivePermawebOSBundler = { address, owner, ring, url }
+      const registeredAt = normalizeTimestamp(registeredRecord?.registered_at)
+      const stake = normalizeScalar(activeRecord.stake)
+      const stakedAt = normalizeTimestamp(activeRecord.staked_at)
+
+      if (registeredAt !== undefined) bundler.registeredAt = registeredAt
+      if (stake) bundler.stake = stake
+      if (stakedAt !== undefined) bundler.stakedAt = stakedAt
+
+      return [bundler]
     })
     .sort((a, b) => a.ring.localeCompare(b.ring) || a.url.localeCompare(b.url))
 }
@@ -110,7 +113,9 @@ async function fetchBundlerStateValue(
   const text = await response.text()
 
   if (!response.ok) {
-    throw new Error(`PermawebOS Bundler state fetch failed with HTTP ${response.status}: ${path}`)
+    throw new Error(
+      `PermawebOS Bundler state fetch failed with HTTP ${response.status}: ${path}`,
+    )
   }
 
   if (normalizeNotFound(text)) return null
@@ -131,14 +136,21 @@ async function fetchBundlerStateValue(
   return stripAoMetadata(parsed)
 }
 
-function bundlerComputeUrl(path: string, options: DiscoverBundlersOptions): string {
-  const gateway = (options.gateway ?? DEFAULT_PERMAWEBOS_BUNDLER_GATEWAY).replace(/\/+$/, '')
-  const processId = options.processId ?? DEFAULT_PERMAWEBOS_BUNDLER_STAKING_PROCESS
-  return `${gateway}/${processId}/compute/${path}?require-codec=application/json&accept-bundle=true`
+function bundlerComputeUrl(
+  path: string,
+  options: DiscoverBundlersOptions,
+): string {
+  const endpoint = (
+    options.endpoint ?? DEFAULT_PERMAWEBOS_BUNDLER_ENDPOINT
+  ).replace(/\/+$/, '')
+  const pid = options.pid ?? DEFAULT_PERMAWEBOS_BUNDLER_STAKING_PROCESS_ID
+  return `${endpoint}/${pid}/compute/${path}?require-codec=application/json&accept-bundle=true`
 }
 
 function getBundlerAddress(record: ActiveRecord): string {
-  return normalizeScalar(record.lapee_address ?? record.lapeeAddress ?? record['lapee-address'])
+  return normalizeScalar(
+    record.lapee_address ?? record.lapeeAddress ?? record['lapee-address'],
+  )
 }
 
 function normalizeBundlerUrl(value: string): string {
@@ -153,7 +165,8 @@ function isExcludedBundlerUrl(url: string): boolean {
 function normalizeScalar(value: unknown): string {
   if (value === null || value === undefined) return ''
   if (typeof value === 'string') return value.trim()
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'number' || typeof value === 'boolean')
+    return String(value)
   return ''
 }
 
@@ -162,7 +175,9 @@ function normalizeTimestamp(value: unknown): number | undefined {
   return Number.isFinite(timestamp) && timestamp > 0 ? timestamp : undefined
 }
 
-function stripAoMetadata(value: Record<string, unknown>): Record<string, unknown> {
+function stripAoMetadata(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
   const stripped: Record<string, unknown> = {}
   for (const [key, entry] of Object.entries(value)) {
     if (!isAoMetadataKey(key)) stripped[key] = entry
@@ -172,7 +187,10 @@ function stripAoMetadata(value: Record<string, unknown>): Record<string, unknown
 }
 
 function isAoMetadataKey(key: string): boolean {
-  return ['ao-result', 'ao-types', 'commitments', 'status'].includes(key) || key.endsWith('+link')
+  return (
+    ['ao-result', 'ao-types', 'commitments', 'status'].includes(key) ||
+    key.endsWith('+link')
+  )
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -181,7 +199,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function parseJson(text: string): unknown | null {
   const trimmed = text.trim()
-  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('['))) return null
+  if (!trimmed || (!trimmed.startsWith('{') && !trimmed.startsWith('[')))
+    return null
 
   try {
     return JSON.parse(trimmed)
@@ -196,6 +215,7 @@ function normalizeNotFound(text: string): boolean {
   if (trimmed.includes('<title>404 - Page not found.</title>')) return true
 
   const parsed = parseJson(trimmed)
-  return isRecord(parsed) && (parsed.status === 404 || parsed.body === 'not_found')
+  return (
+    isRecord(parsed) && (parsed.status === 404 || parsed.body === 'not_found')
+  )
 }
-
