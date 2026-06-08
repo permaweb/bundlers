@@ -86,6 +86,34 @@ The SDK also re-exports `ArweaveSigner` as the ANS-104 signing primitive used
 by `upload()`. Auto-fund uses the same signer to create AO transfer messages
 through `@permaweb/aoconnect`.
 
+### legacy bundlers 
+
+Legacy bundlers are supported through `legacy_upload()`.it does not run HyperBEAM discovery or funding.
+
+```ts
+import { ArweaveSigner, legacy_upload } from '@permaweb/bundlers'
+
+const signer = new ArweaveSigner(jwk)
+
+const result = await legacy_upload({
+  data,
+  signer,
+  tags,
+})
+```
+
+The default legacy bundler is `https://up.arweave.net`. A custom
+legacy uploader can be pinned:
+
+```ts
+await legacy_upload({
+  data,
+  signer,
+  tags,
+  uploader: 'https://upload.example.com',
+})
+```
+
 ## Development
 
 ```sh

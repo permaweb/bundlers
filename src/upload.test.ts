@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { ArweaveSigner, upload } from './index.js'
+import { ArweaveSigner, legacy_upload, upload } from './index.js'
 
 function testJwk(): Record<string, unknown> {
   const { privateKey } = generateKeyPairSync('rsa', {
@@ -51,6 +51,33 @@ describe('upload', () => {
     ).resolves.toEqual({
       id: 'uploaded-item-id',
       uploader: 'https://hyperbeam.test',
+    })
+  })
+
+  it('uploads a signed ANS-104 item to the default legacy uploader', async () => {
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe('https://up.arweave.net/v1/tx/arweave')
+        expect(init?.method).toBe('POST')
+        expect(init?.body).toBeDefined()
+        expect(init?.headers).toMatchObject({
+          'content-type': 'application/octet-stream',
+        })
+
+        return new Response(JSON.stringify({ id: 'legacy-uploaded-item-id' }))
+      },
+    )
+
+    await expect(
+      legacy_upload({
+        data: 'hello',
+        fetch: fetch as typeof globalThis.fetch,
+        signer: new ArweaveSigner(testJwk()),
+        tags: [{ name: 'Content-Type', value: 'text/plain' }],
+      }),
+    ).resolves.toEqual({
+      id: 'legacy-uploaded-item-id',
+      uploader: 'https://up.arweave.net',
     })
   })
 })

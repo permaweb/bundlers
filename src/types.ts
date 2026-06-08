@@ -47,3 +47,12 @@ export interface UploadOptions {
   uploadPath?: string
   uploader?: string
 }
+
+export interface LegacyUploadOptions {
+  data: ArrayBuffer | Uint8Array | string
+  fetch?: typeof fetch
+  signer: UploadSigner
+  tags?: BundlerTag[]
+  token?: string
+  uploader?: string
+}

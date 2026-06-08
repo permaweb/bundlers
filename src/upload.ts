@@ -15,6 +15,7 @@ import {
   type ActivePermawebOSBundler,
 } from './permawebos-bundlers.js'
 import type {
+  LegacyUploadOptions,
   UploadAutoFundOptions,
   UploadCost,
   UploadOptions,
@@ -40,6 +41,8 @@ const ARWEAVE_GATEWAY = 'https://arweave.net'
 const ARWEAVE_OWNER_LENGTH = 512
 const ARWEAVE_SIGNATURE_LENGTH = 512
 const ARWEAVE_SIGNATURE_TYPE = 1
+export const DEFAULT_LEGACY_UPLOADER = 'https://up.arweave.net'
+const DEFAULT_LEGACY_TOKEN = 'arweave'
 const DEFAULT_HYPERBEAM_UPLOAD_PATH =
   '/~bundler@1.0/item?codec-device=ans104@1.0'
 
@@ -61,13 +64,11 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   const uploader = options.uploader ?? (await selectBundler(selectionOptions))
   assertArweaveSigner(options.signer)
 
-  const item = createData(toBuffer(options.data), options.signer, {
-    tags: options.tags ?? [],
+  const signed = await signDataItem({
+    data: options.data,
+    signer: options.signer,
+    tags: options.tags,
   })
-  await item.sign(options.signer)
-
-  const raw = Buffer.from(item.getRaw())
-  const localId = item.id || toBase64Url(new DataItem(raw).id)
   const autoFund = normalizeAutoFundOptions(options.autoFund)
   let autoFundUnavailable: string | undefined
   let cost: UploadCost | undefined
@@ -78,7 +79,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
       quote = await quoteUpload({
         autoFund,
         fetch: fetchImpl,
-        signedBytes: raw.length,
+        signedBytes: signed.raw.length,
         uploader,
       })
       cost = { amount: quote.amount, token: 'AO' }
@@ -105,15 +106,42 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   )
   const postOptions: Parameters<typeof postDataItem>[2] = {
     fetch: fetchImpl,
-    localId,
+    localId: signed.localId,
   }
   if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
 
-  const posted = await postDataItem(uploadUrl, raw, postOptions)
+  const posted = await postDataItem(uploadUrl, signed.raw, postOptions)
 
   return {
     ...(cost ? { cost } : {}),
-    id: posted.id || localId,
+    id: posted.id || signed.localId,
+    uploader,
+  }
+}
+
+export async function legacy_upload(
+  options: LegacyUploadOptions,
+): Promise<UploadResult> {
+  const fetchImpl = options.fetch ?? fetch
+  const uploader = options.uploader ?? DEFAULT_LEGACY_UPLOADER
+  assertArweaveSigner(options.signer)
+
+  const signed = await signDataItem({
+    data: options.data,
+    signer: options.signer,
+    tags: options.tags,
+  })
+  const uploadUrl = legacyUploadUrl(
+    uploader,
+    options.token ?? DEFAULT_LEGACY_TOKEN,
+  )
+  const posted = await postLegacyDataItem(uploadUrl, signed.raw, {
+    fetch: fetchImpl,
+    localId: signed.localId,
+  })
+
+  return {
+    id: posted.id || signed.localId,
     uploader,
   }
 }
@@ -193,6 +221,14 @@ export function hyperbeamUploadUrl(base: string, uploadPath: string): string {
   return new URL(cleanPath, normalizedBase).toString()
 }
 
+export function legacyUploadUrl(
+  base: string,
+  token = DEFAULT_LEGACY_TOKEN,
+): string {
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`
+  return new URL(`v1/tx/${token}`, normalizedBase).toString()
+}
+
 function randomized(
   uploaders: ActivePermawebOSBundler[],
 ): ActivePermawebOSBundler[] {
@@ -225,6 +261,22 @@ function toBuffer(data: UploadOptions['data']): Buffer {
 function toBase64Url(value: string | Uint8Array): string {
   if (typeof value === 'string') return value
   return Buffer.from(value).toString('base64url')
+}
+
+async function signDataItem(options: {
+  data: UploadOptions['data']
+  signer: UploadSigner
+  tags: Array<{ name: string; value: string }> | undefined
+}): Promise<{ localId: string; raw: Buffer }> {
+  const item = createData(toBuffer(options.data), options.signer, {
+    tags: options.tags ?? [],
+  })
+  await item.sign(options.signer)
+
+  const raw = Buffer.from(item.getRaw())
+  const localId = item.id || toBase64Url(new DataItem(raw).id)
+
+  return { localId, raw }
 }
 
 async function quoteUpload(options: {
@@ -399,6 +451,31 @@ async function postDataItem(
       : ''
     throw new Error(
       `HyperBEAM bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}${context}`,
+    )
+  }
+
+  const id = responseId(res.headers, body)
+  return id ? { id } : {}
+}
+
+async function postLegacyDataItem(
+  uploadUrl: string,
+  raw: Buffer,
+  options: { fetch: typeof fetch; localId: string },
+): Promise<{ id?: string }> {
+  const res = await options.fetch(uploadUrl, {
+    body: raw as unknown as BodyInit,
+    headers: {
+      'content-length': String(raw.length),
+      'content-type': 'application/octet-stream',
+    },
+    method: 'POST',
+  })
+  const body = await res.text()
+
+  if (!res.ok) {
+    throw new Error(
+      `Legacy bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}`,
     )
   }
 
