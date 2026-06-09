@@ -17,6 +17,7 @@ const signer = new ArweaveSigner(jwk)
 const result = await upload({
   autoFund: true,
   data: new TextEncoder().encode('hello'),
+  signal: AbortSignal.timeout(30_000),
   signer,
   tags: [{ name: 'Content-Type', value: 'text/plain' }],
 })
@@ -57,7 +58,8 @@ await upload({
 
 Retry behavior can be configured per upload. Retries apply to transient upload
 POST failures (`408`, `429`, `5xx`, and network errors), not client or payment
-errors such as `400` or `402`.
+errors such as `400` or `402`. If `signal` aborts while waiting between
+retries, the upload exits immediately.
 
 ```ts
 await upload({

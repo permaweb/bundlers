@@ -220,6 +220,93 @@ describe('upload', () => {
       ),
     ).toHaveLength(1)
   })
+
+  it('passes AbortSignal through to HyperBEAM preflight and upload requests', async () => {
+    const signal = new AbortController().signal
+    const seenSignals: Array<AbortSignal | null | undefined> = []
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        seenSignals.push(init?.signal)
+        const href = String(url)
+
+        if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+          return new Response('node-address')
+        }
+
+        if (href === 'https://arweave.net/wallet/node-address/balance') {
+          return new Response('1')
+        }
+
+        if (
+          href ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+        ) {
+          return new Response(JSON.stringify({ id: 'signaled-upload-id' }))
+        }
+
+        return new Response('not found', { status: 404 })
+      },
+    )
+
+    await expect(
+      upload({
+        data: 'hello',
+        fetch: fetch as typeof globalThis.fetch,
+        signal,
+        signer: new ArweaveSigner(testJwk()),
+        uploader: 'https://hyperbeam.test',
+      }),
+    ).resolves.toMatchObject({ id: 'signaled-upload-id' })
+
+    expect(seenSignals).toEqual([signal, signal, signal])
+  })
+
+  it('aborts during retry backoff without another upload attempt', async () => {
+    const controller = new AbortController()
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+
+      if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+        return new Response('node-address')
+      }
+
+      if (href === 'https://arweave.net/wallet/node-address/balance') {
+        return new Response('1')
+      }
+
+      if (
+        href ===
+        'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+      ) {
+        return new Response('temporary outage', { status: 503 })
+      }
+
+      return new Response('not found', { status: 404 })
+    })
+
+    await expect(
+      upload({
+        data: 'hello',
+        fetch: fetch as typeof globalThis.fetch,
+        retry: {
+          delayMs: 1_000,
+          onRetry: () => controller.abort(),
+          retries: 2,
+        },
+        signal: controller.signal,
+        signer: new ArweaveSigner(testJwk()),
+        uploader: 'https://hyperbeam.test',
+      }),
+    ).rejects.toThrow(/aborted/i)
+
+    expect(
+      fetch.mock.calls.filter(
+        ([calledUrl]) =>
+          String(calledUrl) ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0',
+      ),
+    ).toHaveLength(1)
+  })
 })
 
 async function createSignedDataItem(

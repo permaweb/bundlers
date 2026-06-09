@@ -65,6 +65,7 @@ export interface UploadOptions {
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
   retry?: boolean | UploadRetryOptions
+  signal?: AbortSignal
   selection?: UploadSelectionOptions
   signer: UploadSigner
   tags?: BundlerTag[]
@@ -77,6 +78,7 @@ export interface UploadSignedDataItemOptions {
   fetch?: typeof fetch
   id?: string
   retry?: boolean | UploadRetryOptions
+  signal?: AbortSignal
   selection?: UploadSelectionOptions
   uploadPath?: string
   uploader?: string
@@ -86,6 +88,7 @@ export interface LegacyUploadOptions {
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
   retry?: boolean | UploadRetryOptions
+  signal?: AbortSignal
   signer: UploadSigner
   tags?: BundlerTag[]
   token?: string

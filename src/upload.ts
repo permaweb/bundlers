@@ -92,7 +92,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
     }
   }
 
-  await preflightBundlerArBalance(uploader, fetchImpl)
+  await preflightBundlerArBalance(uploader, fetchImpl, options.signal)
 
   if (autoFund && quote) {
     await ensureUploadCredit({
@@ -114,6 +114,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   }
   if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.signal) postOptions.signal = options.signal
 
   const posted = await postDataItem(uploadUrl, signed.raw, postOptions)
 
@@ -139,7 +140,7 @@ export async function uploadSignedDataItem(
   const raw = toBuffer(options.dataItem)
   const localId = options.id ?? dataItemId(raw)
 
-  await preflightBundlerArBalance(uploader, fetchImpl)
+  await preflightBundlerArBalance(uploader, fetchImpl, options.signal)
 
   const uploadUrl = hyperbeamUploadUrl(
     uploader,
@@ -150,6 +151,7 @@ export async function uploadSignedDataItem(
     localId,
   }
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.signal) postOptions.signal = options.signal
 
   const posted = await postDataItem(uploadUrl, raw, postOptions)
 
@@ -180,6 +182,7 @@ export async function legacy_upload(
     localId: signed.localId,
   }
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.signal) postOptions.signal = options.signal
 
   const posted = await postLegacyDataItem(uploadUrl, signed.raw, postOptions)
 
@@ -219,9 +222,13 @@ export async function selectBundler(options: {
 export async function preflightBundlerArBalance(
   uploader: string,
   fetchImpl: typeof fetch = fetch,
+  signal?: AbortSignal,
 ): Promise<void> {
   const nodeUrl = uploader.replace(/\/+$/, '')
-  const addressRes = await fetchImpl(`${nodeUrl}/~meta@1.0/info/address`)
+  const addressRes = await fetchImpl(
+    `${nodeUrl}/~meta@1.0/info/address`,
+    requestInit(signal),
+  )
   if (!addressRes.ok) {
     throw new Error(
       `HyperBEAM bundler address check failed with HTTP ${addressRes.status}`,
@@ -235,6 +242,7 @@ export async function preflightBundlerArBalance(
 
   const balanceRes = await fetchImpl(
     `${ARWEAVE_GATEWAY}/wallet/${encodeURIComponent(address)}/balance`,
+    requestInit(signal),
   )
   if (!balanceRes.ok) {
     throw new Error(
@@ -485,9 +493,10 @@ async function postDataItem(
     localId: string
     paymentContext?: string
     retry?: boolean | UploadRetryOptions
+    signal?: AbortSignal
   },
 ): Promise<{ id?: string }> {
-  return withRetry(options.retry, async () => {
+  return withRetry(options.retry, options.signal, async () => {
     const res = await options.fetch(uploadUrl, {
       body: raw as unknown as BodyInit,
       headers: {
@@ -495,6 +504,7 @@ async function postDataItem(
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
+      ...(options.signal ? { signal: options.signal } : {}),
     })
     const body = await res.text()
 
@@ -520,9 +530,10 @@ async function postLegacyDataItem(
     fetch: typeof fetch
     localId: string
     retry?: boolean | UploadRetryOptions
+    signal?: AbortSignal
   },
 ): Promise<{ id?: string }> {
-  return withRetry(options.retry, async () => {
+  return withRetry(options.retry, options.signal, async () => {
     const res = await options.fetch(uploadUrl, {
       body: raw as unknown as BodyInit,
       headers: {
@@ -530,6 +541,7 @@ async function postLegacyDataItem(
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
+      ...(options.signal ? { signal: options.signal } : {}),
     })
     const body = await res.text()
 
@@ -557,12 +569,14 @@ class UploadRequestError extends Error {
 
 async function withRetry<T>(
   retry: boolean | UploadRetryOptions | undefined,
+  signal: AbortSignal | undefined,
   operation: () => Promise<T>,
 ): Promise<T> {
   const config = normalizeRetryOptions(retry)
   let attempt = 0
 
   for (;;) {
+    throwIfAborted(signal)
     try {
       return await operation()
     } catch (error) {
@@ -584,7 +598,7 @@ async function withRetry<T>(
           ? { status: error.status }
           : {}),
       })
-      await sleep(delayMs)
+      await sleep(delayMs, signal)
     }
   }
 }
@@ -622,6 +636,8 @@ function retryDelayMs(retry: NormalizedRetryOptions, attempt: number): number {
 }
 
 function isRetryableUploadError(error: unknown): boolean {
+  if (isAbortError(error)) return false
+
   if (error instanceof UploadRequestError) {
     return (
       error.status === 408 ||
@@ -633,9 +649,38 @@ function isRetryableUploadError(error: unknown): boolean {
   return error instanceof Error
 }
 
-async function sleep(ms: number): Promise<void> {
+async function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal)
   if (ms <= 0) return
-  await new Promise((resolve) => setTimeout(resolve, ms))
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(resolve, ms)
+    const onAbort = () => {
+      clearTimeout(timeout)
+      reject(abortError(signal))
+    }
+    signal?.addEventListener('abort', onAbort, { once: true })
+  })
+}
+
+function requestInit(signal: AbortSignal | undefined): RequestInit {
+  return signal ? { signal } : {}
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw abortError(signal)
+}
+
+function abortError(signal: AbortSignal | undefined): Error {
+  const reason = signal?.reason
+  if (reason instanceof Error) return reason
+  return new DOMException('The operation was aborted.', 'AbortError')
+}
+
+function isAbortError(error: unknown): boolean {
+  return (
+    error instanceof DOMException ||
+    (error instanceof Error && error.name === 'AbortError')
+  )
 }
 
 function responseId(headers: Headers, body: string): string | undefined {
