@@ -11,6 +11,10 @@ export interface UploadResult {
   uploader: string
 }
 
+export interface UploadFolderResult extends UploadResult {
+  files: Record<string, string>
+}
+
 export interface UploadRetryContext {
   attempt: number
   delayMs: number
@@ -77,6 +81,13 @@ export interface UploadFileOptions extends Omit<UploadOptions, 'data'> {
   file: string
 }
 
+export interface UploadFolderOptions extends Omit<UploadOptions, 'data'> {
+  fallbackFile?: string
+  folder: string
+  indexFile?: string
+  manifestTags?: BundlerTag[]
+}
+
 export interface UploadStreamOptions extends Omit<UploadOptions, 'data'> {
   size: number
   stream: () => NodeJS.ReadableStream
@@ -109,6 +120,16 @@ export interface LegacyUploadFileOptions extends Omit<
   'data'
 > {
   file: string
+}
+
+export interface LegacyUploadFolderOptions extends Omit<
+  LegacyUploadOptions,
+  'data'
+> {
+  fallbackFile?: string
+  folder: string
+  indexFile?: string
+  manifestTags?: BundlerTag[]
 }
 
 export interface LegacyUploadStreamOptions extends Omit<

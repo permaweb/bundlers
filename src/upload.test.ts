@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -10,9 +10,11 @@ import {
   ArweaveSigner,
   legacy_upload,
   legacy_uploadFile,
+  legacy_uploadFolder,
   legacy_uploadStream,
   upload,
   uploadFile,
+  uploadFolder,
   uploadSignedDataItem,
   uploadStream,
 } from './index.js'
@@ -150,6 +152,137 @@ describe('upload', () => {
         }),
       ).resolves.toEqual({
         id: 'legacy-file-upload-id',
+        uploader: 'https://up.arweave.net',
+      })
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  it('uploads a folder and Arweave manifest to a pinned HyperBEAM uploader', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bundlers-upload-folder-'))
+    await writeFile(join(dir, 'index.html'), '<h1>Hello</h1>')
+    const assetDir = join(dir, 'assets')
+    await mkdir(assetDir, { recursive: true })
+    await writeFile(join(assetDir, 'app.js'), 'console.log("hello")')
+
+    try {
+      const uploadIds = ['asset-file-id', 'index-file-id', 'manifest-id']
+      const fetch = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          const href = String(url)
+
+          if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+            return new Response('node-address')
+          }
+
+          if (href === 'https://arweave.net/wallet/node-address/balance') {
+            return new Response('1')
+          }
+
+          if (
+            href ===
+            'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+          ) {
+            const uploadAttempts = fetch.mock.calls.filter(
+              ([calledUrl]) =>
+                String(calledUrl) ===
+                'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0',
+            ).length
+            const id = uploadIds[uploadAttempts - 1]
+            expect(init?.method).toBe('POST')
+            if (uploadAttempts === 3) {
+              expect(
+                Buffer.from(init?.body as Uint8Array).toString(),
+              ).toContain('"manifest":"arweave/paths"')
+              expect(
+                Buffer.from(init?.body as Uint8Array).toString(),
+              ).toContain('"index":{"path":"index.html"}')
+              expect(
+                Buffer.from(init?.body as Uint8Array).toString(),
+              ).toContain('"fallback":{"id":"index-file-id"}')
+              expect(
+                Buffer.from(init?.body as Uint8Array).toString(),
+              ).toContain('"assets/app.js":{"id":"asset-file-id"}')
+              expect(
+                Buffer.from(init?.body as Uint8Array).toString(),
+              ).toContain('"index.html":{"id":"index-file-id"}')
+            }
+            return new Response(JSON.stringify({ id }))
+          }
+
+          return new Response('not found', { status: 404 })
+        },
+      )
+
+      await expect(
+        uploadFolder({
+          fetch: fetch as typeof globalThis.fetch,
+          folder: dir,
+          signer: new ArweaveSigner(testJwk()),
+          uploader: 'https://hyperbeam.test',
+        }),
+      ).resolves.toEqual({
+        files: {
+          'assets/app.js': 'asset-file-id',
+          'index.html': 'index-file-id',
+        },
+        id: 'manifest-id',
+        uploader: 'https://hyperbeam.test',
+      })
+    } finally {
+      await rm(dir, { recursive: true })
+    }
+  })
+
+  it('uploads a folder and Arweave manifest to the default legacy uploader', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bundlers-legacy-upload-folder-'))
+    const assetDir = join(dir, 'assets')
+    await mkdir(assetDir, { recursive: true })
+    await writeFile(join(dir, 'index.html'), '<h1>Legacy</h1>')
+    await writeFile(join(assetDir, 'style.css'), 'body { color: black }')
+
+    try {
+      const uploadIds = [
+        'legacy-asset-file-id',
+        'legacy-index-file-id',
+        'legacy-manifest-id',
+      ]
+      const fetch = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          expect(String(url)).toBe('https://up.arweave.net/v1/tx/arweave')
+          expect(init?.method).toBe('POST')
+          const uploadAttempts = fetch.mock.calls.length
+          const id = uploadIds[uploadAttempts - 1]
+
+          if (uploadAttempts === 3) {
+            expect(Buffer.from(init?.body as Uint8Array).toString()).toContain(
+              '"manifest":"arweave/paths"',
+            )
+            expect(Buffer.from(init?.body as Uint8Array).toString()).toContain(
+              '"assets/style.css":{"id":"legacy-asset-file-id"}',
+            )
+            expect(Buffer.from(init?.body as Uint8Array).toString()).toContain(
+              '"fallback":{"id":"legacy-index-file-id"}',
+            )
+          }
+
+          return new Response(JSON.stringify({ id }))
+        },
+      )
+
+      await expect(
+        legacy_uploadFolder({
+          fetch: fetch as typeof globalThis.fetch,
+          folder: dir,
+          signer: new ArweaveSigner(testJwk()),
+        }),
+      ).resolves.toEqual({
+        files: {
+          'assets/style.css': 'legacy-asset-file-id',
+          'index.html': 'legacy-index-file-id',
+        },
+        id: 'legacy-manifest-id',
         uploader: 'https://up.arweave.net',
       })
     } finally {

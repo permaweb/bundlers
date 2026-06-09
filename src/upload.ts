@@ -1,7 +1,8 @@
 import { createHash, randomInt } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import path from 'node:path'
 import { Readable } from 'node:stream'
 
 import { message as aoMessage } from '@permaweb/aoconnect'
@@ -19,10 +20,13 @@ import {
 } from './permawebos-bundlers.js'
 import type {
   LegacyUploadFileOptions,
+  LegacyUploadFolderOptions,
   LegacyUploadOptions,
   LegacyUploadStreamOptions,
   UploadAutoFundOptions,
   UploadFileOptions,
+  UploadFolderOptions,
+  UploadFolderResult,
   UploadOptions,
   UploadResult,
   UploadRetryOptions,
@@ -64,6 +68,7 @@ export const DEFAULT_LEGACY_UPLOADER = 'https://up.arweave.net'
 const DEFAULT_LEGACY_TOKEN = 'arweave'
 const DEFAULT_HYPERBEAM_UPLOAD_PATH =
   '/~bundler@1.0/item?codec-device=ans104@1.0'
+const MANIFEST_CONTENT_TYPE = 'application/x.arweave-manifest+json'
 const DEFAULT_RETRY_DELAY_MS = 1000
 const DEFAULT_RETRY_MAX_DELAY_MS = 30_000
 const DEFAULT_RETRY_RETRIES = 3
@@ -72,6 +77,11 @@ interface Quote {
   amount: bigint
   ledgerId?: string
   tokenId?: string
+}
+
+interface FolderFile {
+  absolutePath: string
+  path: string
 }
 
 export async function upload(options: UploadOptions): Promise<UploadResult> {
@@ -158,6 +168,47 @@ export async function uploadFile(
     size: fileStat.size,
     stream: () => createReadStream(file),
   })
+}
+
+export async function uploadFolder(
+  options: UploadFolderOptions,
+): Promise<UploadFolderResult> {
+  const files = await folderFiles(options.folder)
+  const uploadedFiles: Record<string, string> = {}
+  let totalCost: bigint | undefined
+  let uploader: string | undefined
+
+  for (const file of files) {
+    const result = await uploadFile({
+      ...options,
+      file: file.absolutePath,
+      tags: tagsWithContentType(options.tags, contentTypeForPath(file.path)),
+    })
+    uploadedFiles[file.path] = result.id
+    uploader = result.uploader
+    totalCost = addOptionalCost(totalCost, result.cost)
+  }
+
+  const manifest = folderManifest({
+    fallbackFile: options.fallbackFile,
+    files: uploadedFiles,
+    indexFile: options.indexFile,
+  })
+  const manifestResult = await upload({
+    ...options,
+    data: JSON.stringify(manifest),
+    tags: tagsWithContentType(options.manifestTags, MANIFEST_CONTENT_TYPE),
+  })
+  totalCost = addOptionalCost(totalCost, manifestResult.cost)
+
+  return {
+    ...(totalCost !== undefined
+      ? { cost: totalCost, currency: 'AO' as const }
+      : {}),
+    files: uploadedFiles,
+    id: manifestResult.id,
+    uploader: manifestResult.uploader || uploader || '',
+  }
 }
 
 export async function uploadStream(
@@ -318,6 +369,41 @@ export async function legacy_uploadFile(
     size: fileStat.size,
     stream: () => createReadStream(file),
   })
+}
+
+export async function legacy_uploadFolder(
+  options: LegacyUploadFolderOptions,
+): Promise<UploadFolderResult> {
+  const files = await folderFiles(options.folder)
+  const uploadedFiles: Record<string, string> = {}
+  let uploader: string | undefined
+
+  for (const file of files) {
+    const result = await legacy_uploadFile({
+      ...options,
+      file: file.absolutePath,
+      tags: tagsWithContentType(options.tags, contentTypeForPath(file.path)),
+    })
+    uploadedFiles[file.path] = result.id
+    uploader = result.uploader
+  }
+
+  const manifest = folderManifest({
+    fallbackFile: options.fallbackFile,
+    files: uploadedFiles,
+    indexFile: options.indexFile,
+  })
+  const manifestResult = await legacy_upload({
+    ...options,
+    data: JSON.stringify(manifest),
+    tags: tagsWithContentType(options.manifestTags, MANIFEST_CONTENT_TYPE),
+  })
+
+  return {
+    files: uploadedFiles,
+    id: manifestResult.id,
+    uploader: manifestResult.uploader || uploader || '',
+  }
 }
 
 export async function legacy_uploadStream(
@@ -546,6 +632,164 @@ async function* signedStream(
 function toReadable(stream: NodeJS.ReadableStream): Readable {
   if (stream instanceof Readable) return stream
   return Readable.from(stream)
+}
+
+async function folderFiles(folder: string): Promise<FolderFile[]> {
+  const root = path.resolve(folder)
+  const rootStat = await stat(root)
+
+  if (!rootStat.isDirectory()) {
+    throw new TypeError(`uploadFolder expected a directory: ${folder}`)
+  }
+
+  const files: FolderFile[] = []
+  await collectFolderFiles(root, root, files)
+  files.sort((left, right) => left.path.localeCompare(right.path))
+
+  if (files.length === 0) {
+    throw new Error(`uploadFolder expected at least one file: ${folder}`)
+  }
+
+  return files
+}
+
+async function collectFolderFiles(
+  root: string,
+  current: string,
+  files: FolderFile[],
+): Promise<void> {
+  const entries = await readdir(current, { withFileTypes: true })
+  entries.sort((left, right) => left.name.localeCompare(right.name))
+
+  for (const entry of entries) {
+    const absolutePath = path.join(current, entry.name)
+
+    if (entry.isDirectory()) {
+      await collectFolderFiles(root, absolutePath, files)
+      continue
+    }
+
+    if (!entry.isFile()) continue
+
+    files.push({
+      absolutePath,
+      path: normalizeManifestPath(path.relative(root, absolutePath)),
+    })
+  }
+}
+
+function folderManifest(options: {
+  fallbackFile: string | undefined
+  files: Record<string, string>
+  indexFile: string | undefined
+}): {
+  fallback: { id: string }
+  index: { path: string }
+  manifest: 'arweave/paths'
+  paths: Record<string, { id: string }>
+  version: '0.2.0'
+} {
+  const paths = Object.fromEntries(
+    Object.entries(options.files).map(([filePath, id]) => [filePath, { id }]),
+  )
+  const indexPath = normalizeIndexPath(options.files, options.indexFile)
+  const fallbackId = normalizeFallbackId({
+    fallbackFile: options.fallbackFile,
+    files: options.files,
+    indexPath,
+  })
+
+  return {
+    fallback: { id: fallbackId },
+    index: { path: indexPath },
+    manifest: 'arweave/paths',
+    paths,
+    version: '0.2.0',
+  }
+}
+
+function normalizeIndexPath(
+  files: Record<string, string>,
+  indexFile: string | undefined,
+): string {
+  if (indexFile !== undefined) {
+    const indexPath = normalizeManifestPath(indexFile)
+    if (files[indexPath]) return indexPath
+  }
+
+  if (files['index.html']) return 'index.html'
+
+  const [firstPath] = Object.keys(files)
+  if (!firstPath)
+    throw new Error('Cannot create a manifest for an empty folder')
+  return firstPath
+}
+
+function normalizeFallbackId(options: {
+  fallbackFile: string | undefined
+  files: Record<string, string>
+  indexPath: string
+}): string {
+  if (options.fallbackFile !== undefined) {
+    const fallbackPath = normalizeManifestPath(options.fallbackFile)
+    if (options.files[fallbackPath]) return options.files[fallbackPath]
+  }
+
+  return options.files['404.html'] ?? options.files[options.indexPath]
+}
+
+function normalizeManifestPath(filePath: string): string {
+  return filePath
+    .split(path.sep)
+    .join('/')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+}
+
+function tagsWithContentType(
+  tags: Array<{ name: string; value: string }> | undefined,
+  contentType: string,
+): Array<{ name: string; value: string }> {
+  if (tags?.some((tag) => tag.name.toLowerCase() === 'content-type')) {
+    return tags
+  }
+
+  return [...(tags ?? []), { name: 'Content-Type', value: contentType }]
+}
+
+function contentTypeForPath(filePath: string): string {
+  const extension = path.extname(filePath).toLowerCase()
+
+  return (
+    {
+      '.avif': 'image/avif',
+      '.css': 'text/css',
+      '.gif': 'image/gif',
+      '.html': 'text/html',
+      '.ico': 'image/x-icon',
+      '.jpeg': 'image/jpeg',
+      '.jpg': 'image/jpeg',
+      '.js': 'text/javascript',
+      '.json': 'application/json',
+      '.mjs': 'text/javascript',
+      '.pdf': 'application/pdf',
+      '.png': 'image/png',
+      '.svg': 'image/svg+xml',
+      '.txt': 'text/plain',
+      '.wasm': 'application/wasm',
+      '.webm': 'video/webm',
+      '.webp': 'image/webp',
+      '.xml': 'application/xml',
+    }[extension] ?? 'application/octet-stream'
+  )
+}
+
+function addOptionalCost(
+  current: bigint | undefined,
+  next: bigint | undefined,
+): bigint | undefined {
+  if (next === undefined) return current
+  return (current ?? 0n) + next
 }
 
 function requestBodyLength(body: Buffer | Readable): number {

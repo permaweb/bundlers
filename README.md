@@ -30,12 +30,13 @@ console.log(result.currency) // 'AO'
 
 ### upload files and streams
 
-Use `uploadFile()` for local files and `uploadStream()` when the payload should
-not be buffered fully in memory. Stream uploads need a fresh readable stream for
-each call and the raw payload size in bytes.
+Use `uploadFile()` for local files, `uploadStream()` when the payload should
+not be buffered fully in memory, and `uploadFolder()` to upload a directory plus
+an Arweave manifest. Stream uploads need a fresh readable stream for each call
+and the raw payload size in bytes.
 
 ```ts
-import { uploadFile, uploadStream } from '@permaweb/bundlers'
+import { uploadFile, uploadFolder, uploadStream } from '@permaweb/bundlers'
 
 await uploadFile({
   autoFund: true,
@@ -51,6 +52,17 @@ await uploadStream({
   stream: () => fs.createReadStream(path),
   tags,
 })
+
+const site = await uploadFolder({
+  autoFund: true,
+  fallbackFile: '404.html',
+  folder: './dist',
+  indexFile: 'index.html',
+  signer,
+})
+
+console.log(site.id) // manifest id
+console.log(site.files) // path -> uploaded data item id
 ```
 
 ### upload signed dataitem
@@ -149,6 +161,7 @@ import {
   ArweaveSigner,
   legacy_upload,
   legacy_uploadFile,
+  legacy_uploadFolder,
   legacy_uploadStream,
 } from '@permaweb/bundlers'
 
@@ -175,6 +188,13 @@ await legacy_uploadStream({
   size,
   stream: () => fs.createReadStream(path),
   tags,
+})
+
+await legacy_uploadFolder({
+  fallbackFile: '404.html',
+  folder: './dist',
+  indexFile: 'index.html',
+  signer,
 })
 ```
 
