@@ -3,16 +3,38 @@ export interface BundlerTag {
   value: string
 }
 
-export interface UploadCost {
-  /** Raw token base-unit amount returned by Hyperbalance. */
-  amount: bigint
-  token: 'AO'
-}
-
 export interface UploadResult {
-  cost?: UploadCost
+  /** Raw currency base-unit amount returned by Hyperbalance. */
+  cost?: bigint
+  currency?: 'AO'
   id: string
   uploader: string
+}
+
+export interface UploadRetryContext {
+  attempt: number
+  delayMs: number
+  error?: unknown
+  status?: number
+}
+
+export interface UploadRetryOptions {
+  /**
+   * Number of retry attempts after the initial request.
+   * `retry: true` uses 3 retries.
+   */
+  retries?: number
+  /**
+   * Initial backoff delay in milliseconds.
+   * `retry: true` uses 1000ms.
+   */
+  delayMs?: number
+  /**
+   * Maximum backoff delay in milliseconds.
+   * `retry: true` uses 30000ms.
+   */
+  maxDelayMs?: number
+  onRetry?: (context: UploadRetryContext) => void
 }
 
 export interface UploadAutoFundOptions {
@@ -42,6 +64,7 @@ export interface UploadOptions {
   autoFund?: boolean | UploadAutoFundOptions
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
+  retry?: boolean | UploadRetryOptions
   selection?: UploadSelectionOptions
   signer: UploadSigner
   tags?: BundlerTag[]
@@ -53,6 +76,7 @@ export interface UploadSignedDataItemOptions {
   dataItem: ArrayBuffer | Uint8Array
   fetch?: typeof fetch
   id?: string
+  retry?: boolean | UploadRetryOptions
   selection?: UploadSelectionOptions
   uploadPath?: string
   uploader?: string
@@ -61,6 +85,7 @@ export interface UploadSignedDataItemOptions {
 export interface LegacyUploadOptions {
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
+  retry?: boolean | UploadRetryOptions
   signer: UploadSigner
   tags?: BundlerTag[]
   token?: string

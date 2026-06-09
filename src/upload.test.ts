@@ -125,6 +125,101 @@ describe('upload', () => {
       uploader: 'https://hyperbeam.test',
     })
   })
+
+  it('retries transient HyperBEAM upload failures', async () => {
+    const retryEvents: Array<{ attempt: number; status?: number }> = []
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url)
+
+        if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+          return new Response('node-address')
+        }
+
+        if (href === 'https://arweave.net/wallet/node-address/balance') {
+          return new Response('1')
+        }
+
+        if (
+          href ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+        ) {
+          expect(init?.method).toBe('POST')
+          const uploadAttempts = fetch.mock.calls.filter(
+            ([calledUrl]) =>
+              String(calledUrl) ===
+              'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0',
+          ).length
+          if (uploadAttempts === 1) {
+            return new Response('temporary outage', { status: 503 })
+          }
+          return new Response(JSON.stringify({ id: 'retried-upload-id' }))
+        }
+
+        return new Response('not found', { status: 404 })
+      },
+    )
+
+    await expect(
+      upload({
+        data: 'hello',
+        fetch: fetch as typeof globalThis.fetch,
+        retry: {
+          delayMs: 0,
+          onRetry: ({ attempt, status }) =>
+            retryEvents.push({ attempt, status }),
+          retries: 1,
+        },
+        signer: new ArweaveSigner(testJwk()),
+        uploader: 'https://hyperbeam.test',
+      }),
+    ).resolves.toEqual({
+      id: 'retried-upload-id',
+      uploader: 'https://hyperbeam.test',
+    })
+    expect(retryEvents).toEqual([{ attempt: 1, status: 503 }])
+  })
+
+  it('does not retry payment failures', async () => {
+    const signer = new ArweaveSigner(testJwk())
+    const signed = await createSignedDataItem('hello', signer)
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      const href = String(url)
+
+      if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+        return new Response('node-address')
+      }
+
+      if (href === 'https://arweave.net/wallet/node-address/balance') {
+        return new Response('1')
+      }
+
+      if (
+        href ===
+        'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+      ) {
+        return new Response('Insufficient funds', { status: 402 })
+      }
+
+      return new Response('not found', { status: 404 })
+    })
+
+    await expect(
+      uploadSignedDataItem({
+        dataItem: signed.raw,
+        fetch: fetch as typeof globalThis.fetch,
+        retry: { delayMs: 0, retries: 3 },
+        uploader: 'https://hyperbeam.test',
+      }),
+    ).rejects.toThrow(/HTTP 402/)
+    expect(
+      fetch.mock.calls.filter(
+        ([calledUrl]) =>
+          String(calledUrl) ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0',
+      ),
+    ).toHaveLength(1)
+  })
 })
 
 async function createSignedDataItem(

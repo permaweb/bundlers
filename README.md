@@ -4,6 +4,8 @@
 
 ## API
 
+### upload data
+
 `upload()` is the main entrypoint. If `uploader` is omitted, it discovers active
 PermawebOS bundlers and selects a usable one automatically.
 
@@ -21,8 +23,11 @@ const result = await upload({
 
 console.log(result.id)
 console.log(result.uploader)
-console.log(result.cost?.amount) // raw AO base units as a bigint
+console.log(result.cost) // raw AO base units as a bigint
+console.log(result.currency) // 'AO'
 ```
+
+### upload signed dataitem
 
 Upload an already-signed ANS-104 data item:
 
@@ -43,15 +48,34 @@ Pinned uploader:
 await upload({
   autoFund: true,
   data,
+  retry: true,
   signer,
   tags,
   uploader: 'https://lapee.hyperzine.xyz',
 })
 ```
 
+Retry behavior can be configured per upload. Retries apply to transient upload
+POST failures (`408`, `429`, `5xx`, and network errors), not client or payment
+errors such as `400` or `402`.
+
+```ts
+await upload({
+  data,
+  retry: {
+    retries: 3,
+    delayMs: 1000,
+    maxDelayMs: 30_000,
+  },
+  signer,
+})
+```
+
 Apps can call the discovery helper directly when they need to inspect available
 bundlers without uploading. Uploads do not need this step; `upload()` runs
 selection internally when `uploader` is omitted.
+
+### permawebos bundlers discoverability
 
 ```ts
 import { discoverBundlers } from '@permaweb/bundlers'
@@ -117,7 +141,7 @@ await legacy_upload({
 })
 ```
 
-## Development
+## development
 
 ```sh
 pnpm install

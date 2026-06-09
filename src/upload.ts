@@ -17,9 +17,9 @@ import {
 import type {
   LegacyUploadOptions,
   UploadAutoFundOptions,
-  UploadCost,
   UploadOptions,
   UploadResult,
+  UploadRetryOptions,
   UploadSigner,
   UploadSignedDataItemOptions,
 } from './types.js'
@@ -46,6 +46,9 @@ export const DEFAULT_LEGACY_UPLOADER = 'https://up.arweave.net'
 const DEFAULT_LEGACY_TOKEN = 'arweave'
 const DEFAULT_HYPERBEAM_UPLOAD_PATH =
   '/~bundler@1.0/item?codec-device=ans104@1.0'
+const DEFAULT_RETRY_DELAY_MS = 1000
+const DEFAULT_RETRY_MAX_DELAY_MS = 30_000
+const DEFAULT_RETRY_RETRIES = 3
 
 interface Quote {
   amount: bigint
@@ -72,7 +75,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   })
   const autoFund = normalizeAutoFundOptions(options.autoFund)
   let autoFundUnavailable: string | undefined
-  let cost: UploadCost | undefined
+  let cost: bigint | undefined
   let quote: Quote | undefined
 
   if (autoFund) {
@@ -83,7 +86,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
         signedBytes: signed.raw.length,
         uploader,
       })
-      cost = { amount: quote.amount, token: 'AO' }
+      cost = quote.amount
     } catch (error) {
       autoFundUnavailable = cleanErrorMessage(error)
     }
@@ -110,11 +113,12 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
     localId: signed.localId,
   }
   if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
+  if (options.retry !== undefined) postOptions.retry = options.retry
 
   const posted = await postDataItem(uploadUrl, signed.raw, postOptions)
 
   return {
-    ...(cost ? { cost } : {}),
+    ...(cost ? { cost, currency: 'AO' as const } : {}),
     id: posted.id || signed.localId,
     uploader,
   }
@@ -141,10 +145,13 @@ export async function uploadSignedDataItem(
     uploader,
     options.uploadPath ?? DEFAULT_HYPERBEAM_UPLOAD_PATH,
   )
-  const posted = await postDataItem(uploadUrl, raw, {
+  const postOptions: Parameters<typeof postDataItem>[2] = {
     fetch: fetchImpl,
     localId,
-  })
+  }
+  if (options.retry !== undefined) postOptions.retry = options.retry
+
+  const posted = await postDataItem(uploadUrl, raw, postOptions)
 
   return {
     id: posted.id || localId,
@@ -168,10 +175,13 @@ export async function legacy_upload(
     uploader,
     options.token ?? DEFAULT_LEGACY_TOKEN,
   )
-  const posted = await postLegacyDataItem(uploadUrl, signed.raw, {
+  const postOptions: Parameters<typeof postLegacyDataItem>[2] = {
     fetch: fetchImpl,
     localId: signed.localId,
-  })
+  }
+  if (options.retry !== undefined) postOptions.retry = options.retry
+
+  const posted = await postLegacyDataItem(uploadUrl, signed.raw, postOptions)
 
   return {
     id: posted.id || signed.localId,
@@ -470,54 +480,162 @@ function createAoDataItemSigner(
 async function postDataItem(
   uploadUrl: string,
   raw: Buffer,
-  options: { fetch: typeof fetch; localId: string; paymentContext?: string },
+  options: {
+    fetch: typeof fetch
+    localId: string
+    paymentContext?: string
+    retry?: boolean | UploadRetryOptions
+  },
 ): Promise<{ id?: string }> {
-  const res = await options.fetch(uploadUrl, {
-    body: raw as unknown as BodyInit,
-    headers: {
-      accept: 'application/json, text/plain, */*',
-      'content-type': 'application/octet-stream',
-    },
-    method: 'POST',
+  return withRetry(options.retry, async () => {
+    const res = await options.fetch(uploadUrl, {
+      body: raw as unknown as BodyInit,
+      headers: {
+        accept: 'application/json, text/plain, */*',
+        'content-type': 'application/octet-stream',
+      },
+      method: 'POST',
+    })
+    const body = await res.text()
+
+    if (!res.ok) {
+      const context = options.paymentContext
+        ? `\n\nAuto-fund compatibility check failed: ${options.paymentContext}\nAttempted direct upload instead.`
+        : ''
+      throw new UploadRequestError(
+        `HyperBEAM bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}${context}`,
+        res.status,
+      )
+    }
+
+    const id = responseId(res.headers, body)
+    return id ? { id } : {}
   })
-  const body = await res.text()
-
-  if (!res.ok) {
-    const context = options.paymentContext
-      ? `\n\nAuto-fund compatibility check failed: ${options.paymentContext}\nAttempted direct upload instead.`
-      : ''
-    throw new Error(
-      `HyperBEAM bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}${context}`,
-    )
-  }
-
-  const id = responseId(res.headers, body)
-  return id ? { id } : {}
 }
 
 async function postLegacyDataItem(
   uploadUrl: string,
   raw: Buffer,
-  options: { fetch: typeof fetch; localId: string },
+  options: {
+    fetch: typeof fetch
+    localId: string
+    retry?: boolean | UploadRetryOptions
+  },
 ): Promise<{ id?: string }> {
-  const res = await options.fetch(uploadUrl, {
-    body: raw as unknown as BodyInit,
-    headers: {
-      'content-length': String(raw.length),
-      'content-type': 'application/octet-stream',
-    },
-    method: 'POST',
-  })
-  const body = await res.text()
+  return withRetry(options.retry, async () => {
+    const res = await options.fetch(uploadUrl, {
+      body: raw as unknown as BodyInit,
+      headers: {
+        'content-length': String(raw.length),
+        'content-type': 'application/octet-stream',
+      },
+      method: 'POST',
+    })
+    const body = await res.text()
 
-  if (!res.ok) {
-    throw new Error(
-      `Legacy bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}`,
+    if (!res.ok) {
+      throw new UploadRequestError(
+        `Legacy bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}`,
+        res.status,
+      )
+    }
+
+    const id = responseId(res.headers, body)
+    return id ? { id } : {}
+  })
+}
+
+class UploadRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message)
+    this.name = 'UploadRequestError'
+  }
+}
+
+async function withRetry<T>(
+  retry: boolean | UploadRetryOptions | undefined,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const config = normalizeRetryOptions(retry)
+  let attempt = 0
+
+  for (;;) {
+    try {
+      return await operation()
+    } catch (error) {
+      if (
+        !config ||
+        attempt >= config.retries ||
+        !isRetryableUploadError(error)
+      ) {
+        throw error
+      }
+
+      attempt += 1
+      const delayMs = retryDelayMs(config, attempt)
+      config.onRetry?.({
+        attempt,
+        delayMs,
+        error,
+        ...(error instanceof UploadRequestError
+          ? { status: error.status }
+          : {}),
+      })
+      await sleep(delayMs)
+    }
+  }
+}
+
+function normalizeRetryOptions(
+  retry: boolean | UploadRetryOptions | undefined,
+): NormalizedRetryOptions | undefined {
+  if (!retry) return undefined
+  if (retry === true) {
+    return {
+      delayMs: DEFAULT_RETRY_DELAY_MS,
+      maxDelayMs: DEFAULT_RETRY_MAX_DELAY_MS,
+      retries: DEFAULT_RETRY_RETRIES,
+    }
+  }
+
+  const normalized: NormalizedRetryOptions = {
+    delayMs: retry.delayMs ?? DEFAULT_RETRY_DELAY_MS,
+    maxDelayMs: retry.maxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS,
+    retries: retry.retries ?? DEFAULT_RETRY_RETRIES,
+  }
+  if (retry.onRetry) normalized.onRetry = retry.onRetry
+  return normalized
+}
+
+interface NormalizedRetryOptions {
+  delayMs: number
+  maxDelayMs: number
+  onRetry?: UploadRetryOptions['onRetry']
+  retries: number
+}
+
+function retryDelayMs(retry: NormalizedRetryOptions, attempt: number): number {
+  return Math.min(retry.delayMs * 2 ** (attempt - 1), retry.maxDelayMs)
+}
+
+function isRetryableUploadError(error: unknown): boolean {
+  if (error instanceof UploadRequestError) {
+    return (
+      error.status === 408 ||
+      error.status === 429 ||
+      (error.status >= 500 && error.status < 600)
     )
   }
 
-  const id = responseId(res.headers, body)
-  return id ? { id } : {}
+  return error instanceof Error
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return
+  await new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function responseId(headers: Headers, body: string): string | undefined {
