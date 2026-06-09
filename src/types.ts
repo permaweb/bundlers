@@ -41,6 +41,14 @@ export interface UploadRetryOptions {
   onRetry?: (context: UploadRetryContext) => void
 }
 
+export interface UploadProgressContext {
+  loaded: number
+  phase: 'signing' | 'uploading'
+  total: number
+}
+
+export type UploadProgressCallback = (context: UploadProgressContext) => void
+
 export interface UploadAutoFundOptions {
   aoPollMs?: number
   aoStateUrl?: string
@@ -68,6 +76,7 @@ export interface UploadOptions {
   autoFund?: boolean | UploadAutoFundOptions
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
+  onProgress?: UploadProgressCallback
   retry?: boolean | UploadRetryOptions
   signal?: AbortSignal
   selection?: UploadSelectionOptions
@@ -97,6 +106,7 @@ export interface UploadSignedDataItemOptions {
   dataItem: ArrayBuffer | Uint8Array
   fetch?: typeof fetch
   id?: string
+  onProgress?: UploadProgressCallback
   retry?: boolean | UploadRetryOptions
   signal?: AbortSignal
   selection?: UploadSelectionOptions
@@ -107,6 +117,7 @@ export interface UploadSignedDataItemOptions {
 export interface LegacyUploadOptions {
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch
+  onProgress?: UploadProgressCallback
   retry?: boolean | UploadRetryOptions
   signal?: AbortSignal
   signer: UploadSigner

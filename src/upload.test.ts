@@ -29,6 +29,47 @@ function testJwk(): Record<string, unknown> {
 }
 
 describe('upload', () => {
+  it('emits signing and upload progress for buffered HyperBEAM uploads', async () => {
+    const progress: Array<{ loaded: number; phase: string; total: number }> = []
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url)
+
+        if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+          return new Response('node-address')
+        }
+
+        if (href === 'https://arweave.net/wallet/node-address/balance') {
+          return new Response('1')
+        }
+
+        if (
+          href ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+        ) {
+          expect(init?.method).toBe('POST')
+          return new Response(JSON.stringify({ id: 'progress-upload-id' }))
+        }
+
+        return new Response('not found', { status: 404 })
+      },
+    )
+
+    await upload({
+      data: 'hello',
+      fetch: fetch as typeof globalThis.fetch,
+      onProgress: (event) => progress.push(event),
+      signer: new ArweaveSigner(testJwk()),
+      uploader: 'https://hyperbeam.test',
+    })
+
+    expect(progress[0]).toEqual({ loaded: 0, phase: 'signing', total: 5 })
+    expect(progress[1]).toEqual({ loaded: 5, phase: 'signing', total: 5 })
+    expect(progress[2]).toMatchObject({ loaded: 0, phase: 'uploading' })
+    expect(progress.at(-1)).toMatchObject({ phase: 'uploading' })
+    expect(progress.at(-1)?.loaded).toBe(progress.at(-1)?.total)
+  })
+
   it('uploads a signed ANS-104 item to a pinned HyperBEAM uploader', async () => {
     const fetch = vi.fn(
       async (url: string | URL | Request, init?: RequestInit) => {
@@ -373,6 +414,53 @@ describe('upload', () => {
 
     expect(result.id).toMatch(/^[a-zA-Z0-9_-]+$/)
     expect(result.uploader).toBe('https://hyperbeam.test')
+  })
+
+  it('emits incremental signing and upload progress for stream uploads', async () => {
+    const progress: Array<{ loaded: number; phase: string; total: number }> = []
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url)
+
+        if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+          return new Response('node-address')
+        }
+
+        if (href === 'https://arweave.net/wallet/node-address/balance') {
+          return new Response('1')
+        }
+
+        if (
+          href ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+        ) {
+          for await (const _chunk of init?.body as Readable) {
+            // Consume the body so the SDK's upload progress stream is exercised.
+          }
+          return new Response(JSON.stringify({ id: 'stream-progress-id' }))
+        }
+
+        return new Response('not found', { status: 404 })
+      },
+    )
+
+    await uploadStream({
+      fetch: fetch as typeof globalThis.fetch,
+      onProgress: (event) => progress.push(event),
+      signer: new ArweaveSigner(testJwk()),
+      size: 'hello world'.length,
+      stream: () => Readable.from(['hello', ' ', 'world']),
+      uploader: 'https://hyperbeam.test',
+    })
+
+    const signing = progress.filter((event) => event.phase === 'signing')
+    const uploading = progress.filter((event) => event.phase === 'uploading')
+
+    expect(signing.map((event) => event.loaded)).toEqual([0, 5, 6, 11])
+    expect(signing.every((event) => event.total === 11)).toBe(true)
+    expect(uploading[0]?.loaded).toBe(0)
+    expect(uploading.at(-1)?.loaded).toBe(uploading.at(-1)?.total)
+    expect(uploading.at(-1)?.total).toBeGreaterThan(11)
   })
 
   it('uploads a signed file using a fresh stream body', async () => {

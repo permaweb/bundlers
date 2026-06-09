@@ -17,6 +17,9 @@ const signer = new ArweaveSigner(jwk)
 const result = await upload({
   autoFund: true,
   data: new TextEncoder().encode('hello'),
+  onProgress: ({ loaded, phase, total }) => {
+    console.log(`${phase}: ${loaded}/${total}`)
+  },
   signal: AbortSignal.timeout(30_000),
   signer,
   tags: [{ name: 'Content-Type', value: 'text/plain' }],
@@ -47,6 +50,9 @@ await uploadFile({
 
 await uploadStream({
   autoFund: true,
+  onProgress: ({ loaded, phase, total }) => {
+    console.log(`${phase}: ${loaded}/${total}`)
+  },
   signer,
   size,
   stream: () => fs.createReadStream(path),

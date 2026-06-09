@@ -28,6 +28,7 @@ import type {
   UploadFolderOptions,
   UploadFolderResult,
   UploadOptions,
+  UploadProgressCallback,
   UploadResult,
   UploadRetryOptions,
   UploadSigner,
@@ -98,6 +99,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
 
   const signed = await signDataItem({
     data: options.data,
+    onProgress: options.onProgress,
     signer: options.signer,
     tags: options.tags,
   })
@@ -141,6 +143,7 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
     localId: signed.localId,
   }
   if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
+  if (options.onProgress) postOptions.onProgress = options.onProgress
   if (options.retry !== undefined) postOptions.retry = options.retry
   if (options.signal) postOptions.signal = options.signal
 
@@ -226,6 +229,7 @@ export async function uploadStream(
   assertArweaveSigner(options.signer)
 
   const signed = await signStreamDataItem({
+    onProgress: options.onProgress,
     signer: options.signer,
     size: options.size,
     stream: options.stream,
@@ -272,6 +276,7 @@ export async function uploadStream(
     localId: signed.localId,
   }
   if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
+  if (options.onProgress) postOptions.onProgress = options.onProgress
   if (options.retry !== undefined) postOptions.retry = options.retry
   if (options.signal) postOptions.signal = options.signal
 
@@ -310,6 +315,7 @@ export async function uploadSignedDataItem(
     localId,
   }
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.onProgress) postOptions.onProgress = options.onProgress
   if (options.signal) postOptions.signal = options.signal
 
   const posted = await postDataItem(uploadUrl, () => raw, postOptions)
@@ -329,6 +335,7 @@ export async function legacy_upload(
 
   const signed = await signDataItem({
     data: options.data,
+    onProgress: options.onProgress,
     signer: options.signer,
     tags: options.tags,
   })
@@ -341,6 +348,7 @@ export async function legacy_upload(
     localId: signed.localId,
   }
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.onProgress) postOptions.onProgress = options.onProgress
   if (options.signal) postOptions.signal = options.signal
 
   const posted = await postLegacyDataItem(uploadUrl, () => signed.raw, {
@@ -414,6 +422,7 @@ export async function legacy_uploadStream(
   assertArweaveSigner(options.signer)
 
   const signed = await signStreamDataItem({
+    onProgress: options.onProgress,
     signer: options.signer,
     size: options.size,
     stream: options.stream,
@@ -429,6 +438,7 @@ export async function legacy_uploadStream(
     localId: signed.localId,
   }
   if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.onProgress) postOptions.onProgress = options.onProgress
   if (options.signal) postOptions.signal = options.signal
 
   const posted = await postLegacyDataItem(uploadUrl, signed.stream, postOptions)
@@ -563,13 +573,17 @@ function toBase64Url(value: string | Uint8Array): string {
 
 async function signDataItem(options: {
   data: UploadOptions['data']
+  onProgress: UploadProgressCallback | undefined
   signer: UploadSigner
   tags: Array<{ name: string; value: string }> | undefined
 }): Promise<{ localId: string; raw: Buffer }> {
-  const item = createData(toBuffer(options.data), options.signer, {
+  const data = toBuffer(options.data)
+  emitProgress(options.onProgress, 'signing', 0, data.length)
+  const item = createData(data, options.signer, {
     tags: options.tags ?? [],
   })
   await item.sign(options.signer)
+  emitProgress(options.onProgress, 'signing', data.length, data.length)
 
   const raw = Buffer.from(item.getRaw())
   const localId = item.id || dataItemId(raw)
@@ -578,6 +592,7 @@ async function signDataItem(options: {
 }
 
 async function signStreamDataItem(options: {
+  onProgress: UploadProgressCallback | undefined
   signer: UploadSigner
   size: number
   stream: () => NodeJS.ReadableStream
@@ -602,7 +617,12 @@ async function signStreamDataItem(options: {
     header.rawTarget,
     header.rawAnchor,
     header.rawTags,
-    toReadable(options.stream()),
+    progressReadable(
+      toReadable(options.stream()),
+      'signing',
+      options.size,
+      options.onProgress,
+    ),
   ])
   const sigBytes = Buffer.from(await options.signer.sign(hash))
   await header.setSignature(sigBytes)
@@ -615,7 +635,12 @@ async function signStreamDataItem(options: {
     localId,
     signedBytes: headerBytes.length + options.size,
     stream: () =>
-      Readable.from(signedStream(headerBytes, toReadable(options.stream()))),
+      progressReadable(
+        Readable.from(signedStream(headerBytes, toReadable(options.stream()))),
+        'uploading',
+        headerBytes.length + options.size,
+        options.onProgress,
+      ),
   }
 }
 
@@ -632,6 +657,48 @@ async function* signedStream(
 function toReadable(stream: NodeJS.ReadableStream): Readable {
   if (stream instanceof Readable) return stream
   return Readable.from(stream)
+}
+
+function progressReadable(
+  stream: Readable,
+  phase: 'signing' | 'uploading',
+  total: number,
+  onProgress: UploadProgressCallback | undefined,
+): Readable {
+  if (!onProgress) return stream
+
+  async function* track(): AsyncGenerator<Buffer | string | Uint8Array> {
+    let loaded = 0
+    emitProgress(onProgress, phase, loaded, total)
+
+    for await (const chunk of stream) {
+      loaded += chunkByteLength(chunk)
+      emitProgress(onProgress, phase, Math.min(loaded, total), total)
+      yield chunk as Buffer | string | Uint8Array
+    }
+
+    if (loaded < total) {
+      emitProgress(onProgress, phase, total, total)
+    }
+  }
+
+  return Readable.from(track())
+}
+
+function emitProgress(
+  onProgress: UploadProgressCallback | undefined,
+  phase: 'signing' | 'uploading',
+  loaded: number,
+  total: number,
+): void {
+  onProgress?.({ loaded, phase, total })
+}
+
+function chunkByteLength(chunk: unknown): number {
+  if (typeof chunk === 'string') return Buffer.byteLength(chunk)
+  if (chunk instanceof ArrayBuffer) return chunk.byteLength
+  if (ArrayBuffer.isView(chunk)) return chunk.byteLength
+  return Buffer.byteLength(String(chunk))
 }
 
 async function folderFiles(folder: string): Promise<FolderFile[]> {
@@ -959,6 +1026,7 @@ async function postDataItem(
     contentLength?: number
     fetch: typeof fetch
     localId: string
+    onProgress?: UploadProgressCallback
     paymentContext?: string
     retry?: boolean | UploadRetryOptions
     signal?: AbortSignal
@@ -966,13 +1034,16 @@ async function postDataItem(
 ): Promise<{ id?: string }> {
   return withRetry(options.retry, options.signal, async () => {
     const requestBody = body()
+    const contentLength =
+      options.contentLength ?? requestBodyLength(requestBody)
+    if (Buffer.isBuffer(requestBody)) {
+      emitProgress(options.onProgress, 'uploading', 0, contentLength)
+    }
     const init: RequestInit & { duplex?: 'half' } = {
       body: requestBody as unknown as BodyInit,
       headers: {
         accept: 'application/json, text/plain, */*',
-        ...(options.contentLength !== undefined
-          ? { 'content-length': String(options.contentLength) }
-          : {}),
+        'content-length': String(contentLength),
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
@@ -982,6 +1053,14 @@ async function postDataItem(
 
     const res = await options.fetch(uploadUrl, init)
     const responseBody = await res.text()
+    if (Buffer.isBuffer(requestBody)) {
+      emitProgress(
+        options.onProgress,
+        'uploading',
+        contentLength,
+        contentLength,
+      )
+    }
 
     if (!res.ok) {
       const context = options.paymentContext
@@ -1005,18 +1084,22 @@ async function postLegacyDataItem(
     contentLength?: number
     fetch: typeof fetch
     localId: string
+    onProgress?: UploadProgressCallback
     retry?: boolean | UploadRetryOptions
     signal?: AbortSignal
   },
 ): Promise<{ id?: string }> {
   return withRetry(options.retry, options.signal, async () => {
     const requestBody = body()
+    const contentLength =
+      options.contentLength ?? requestBodyLength(requestBody)
+    if (Buffer.isBuffer(requestBody)) {
+      emitProgress(options.onProgress, 'uploading', 0, contentLength)
+    }
     const init: RequestInit & { duplex?: 'half' } = {
       body: requestBody as unknown as BodyInit,
       headers: {
-        'content-length': String(
-          options.contentLength ?? requestBodyLength(requestBody),
-        ),
+        'content-length': String(contentLength),
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
@@ -1026,6 +1109,14 @@ async function postLegacyDataItem(
 
     const res = await options.fetch(uploadUrl, init)
     const responseBody = await res.text()
+    if (Buffer.isBuffer(requestBody)) {
+      emitProgress(
+        options.onProgress,
+        'uploading',
+        contentLength,
+        contentLength,
+      )
+    }
 
     if (!res.ok) {
       throw new UploadRequestError(
