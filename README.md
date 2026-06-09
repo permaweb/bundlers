@@ -2,6 +2,14 @@
 
 [PermawebOS bundlers](https://ao.arweave.net/#/stake/bundle) funding and data upload SDK.
 
+Published package: [@permaweb/bundlers](https://www.npmjs.com/package/@permaweb/bundlers)
+
+## install
+
+```sh
+npm install @permaweb/bundlers
+```
+
 ## API
 
 ### upload data
