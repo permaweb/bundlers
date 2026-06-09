@@ -24,6 +24,19 @@ console.log(result.uploader)
 console.log(result.cost?.amount) // raw AO base units as a bigint
 ```
 
+Upload an already-signed ANS-104 data item:
+
+```ts
+import { uploadSignedDataItem } from '@permaweb/bundlers'
+
+const result = await uploadSignedDataItem({
+  dataItem: signedDataItemBytes,
+  uploader: 'https://lapee.hyperzine.xyz',
+})
+
+console.log(result.id)
+```
+
 Pinned uploader:
 
 ```ts

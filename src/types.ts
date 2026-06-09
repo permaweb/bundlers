@@ -49,6 +49,15 @@ export interface UploadOptions {
   uploader?: string
 }
 
+export interface UploadSignedDataItemOptions {
+  dataItem: ArrayBuffer | Uint8Array
+  fetch?: typeof fetch
+  id?: string
+  selection?: UploadSelectionOptions
+  uploadPath?: string
+  uploader?: string
+}
+
 export interface LegacyUploadOptions {
   data: ArrayBuffer | Uint8Array | string
   fetch?: typeof fetch

@@ -21,6 +21,7 @@ import type {
   UploadOptions,
   UploadResult,
   UploadSigner,
+  UploadSignedDataItemOptions,
 } from './types.js'
 
 const require = createRequire(import.meta.url)
@@ -115,6 +116,38 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   return {
     ...(cost ? { cost } : {}),
     id: posted.id || signed.localId,
+    uploader,
+  }
+}
+
+export async function uploadSignedDataItem(
+  options: UploadSignedDataItemOptions,
+): Promise<UploadResult> {
+  const fetchImpl = options.fetch ?? fetch
+  const selectionOptions: Parameters<typeof selectBundler>[0] = {
+    fetch: fetchImpl,
+  }
+  if (options.selection?.endpoint)
+    selectionOptions.endpoint = options.selection.endpoint
+  if (options.selection?.pid) selectionOptions.pid = options.selection.pid
+
+  const uploader = options.uploader ?? (await selectBundler(selectionOptions))
+  const raw = toBuffer(options.dataItem)
+  const localId = options.id ?? dataItemId(raw)
+
+  await preflightBundlerArBalance(uploader, fetchImpl)
+
+  const uploadUrl = hyperbeamUploadUrl(
+    uploader,
+    options.uploadPath ?? DEFAULT_HYPERBEAM_UPLOAD_PATH,
+  )
+  const posted = await postDataItem(uploadUrl, raw, {
+    fetch: fetchImpl,
+    localId,
+  })
+
+  return {
+    id: posted.id || localId,
     uploader,
   }
 }
@@ -274,9 +307,13 @@ async function signDataItem(options: {
   await item.sign(options.signer)
 
   const raw = Buffer.from(item.getRaw())
-  const localId = item.id || toBase64Url(new DataItem(raw).id)
+  const localId = item.id || dataItemId(raw)
 
   return { localId, raw }
+}
+
+function dataItemId(raw: Buffer): string {
+  return toBase64Url(new DataItem(raw).id)
 }
 
 async function quoteUpload(options: {
