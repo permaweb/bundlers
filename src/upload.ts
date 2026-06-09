@@ -1,8 +1,6 @@
 import { createHash, randomInt } from 'node:crypto'
 import { createReadStream } from 'node:fs'
-import { readdir, stat } from 'node:fs/promises'
-import { createRequire } from 'node:module'
-import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 
 import { message as aoMessage } from '@permaweb/aoconnect'
@@ -18,6 +16,20 @@ import {
   discoverBundlers,
   type ActivePermawebOSBundler,
 } from './permawebos-bundlers.js'
+import {
+  contentTypeForPath,
+  folderFiles,
+  folderManifest,
+  MANIFEST_CONTENT_TYPE,
+  tagsWithContentType,
+} from './folder.js'
+import { emitProgress } from './progress.js'
+import {
+  dataItemId,
+  signDataItem,
+  signStreamDataItem,
+  toBuffer,
+} from './signing.js'
 import type {
   LegacyUploadFileOptions,
   LegacyUploadFolderOptions,
@@ -36,31 +48,6 @@ import type {
   UploadStreamOptions,
 } from './types.js'
 
-const require = createRequire(import.meta.url)
-const { DataItem, createData, deepHash, stringToBuffer } =
-  require('@dha-team/arbundles') as {
-    DataItem: new (raw: Buffer) => { id: string | Uint8Array }
-    createData: (
-      data: Buffer,
-      signer: UploadSigner,
-      opts?: { tags?: Array<{ name: string; value: string }> },
-    ) => {
-      getRaw: () => Uint8Array
-      id?: string
-      sign: (signer: UploadSigner) => Promise<void>
-      rawAnchor: Buffer
-      rawOwner: Buffer
-      rawTags: Buffer
-      rawTarget: Buffer
-      setSignature: (signature: Buffer) => Promise<void>
-      signatureType: number
-    }
-    deepHash: (
-      chunks: Array<Buffer | Readable | Uint8Array>,
-    ) => Promise<Uint8Array>
-    stringToBuffer: (value: string) => Buffer
-  }
-
 const ARWEAVE_GATEWAY = 'https://arweave.net'
 const ARWEAVE_OWNER_LENGTH = 512
 const ARWEAVE_SIGNATURE_LENGTH = 512
@@ -69,7 +56,6 @@ export const DEFAULT_LEGACY_UPLOADER = 'https://up.arweave.net'
 const DEFAULT_LEGACY_TOKEN = 'arweave'
 const DEFAULT_HYPERBEAM_UPLOAD_PATH =
   '/~bundler@1.0/item?codec-device=ans104@1.0'
-const MANIFEST_CONTENT_TYPE = 'application/x.arweave-manifest+json'
 const DEFAULT_RETRY_DELAY_MS = 1000
 const DEFAULT_RETRY_MAX_DELAY_MS = 30_000
 const DEFAULT_RETRY_RETRIES = 3
@@ -78,11 +64,6 @@ interface Quote {
   amount: bigint
   ledgerId?: string
   tokenId?: string
-}
-
-interface FolderFile {
-  absolutePath: string
-  path: string
 }
 
 export async function upload(options: UploadOptions): Promise<UploadResult> {
@@ -560,297 +541,6 @@ function normalizeAutoFundOptions(
   return typeof autoFund === 'boolean' ? {} : autoFund
 }
 
-function toBuffer(data: UploadOptions['data']): Buffer {
-  if (typeof data === 'string') return Buffer.from(data)
-  if (data instanceof ArrayBuffer) return Buffer.from(data)
-  return Buffer.from(data.buffer, data.byteOffset, data.byteLength)
-}
-
-function toBase64Url(value: string | Uint8Array): string {
-  if (typeof value === 'string') return value
-  return Buffer.from(value).toString('base64url')
-}
-
-async function signDataItem(options: {
-  data: UploadOptions['data']
-  onProgress: UploadProgressCallback | undefined
-  signer: UploadSigner
-  tags: Array<{ name: string; value: string }> | undefined
-}): Promise<{ localId: string; raw: Buffer }> {
-  const data = toBuffer(options.data)
-  emitProgress(options.onProgress, 'signing', 0, data.length)
-  const item = createData(data, options.signer, {
-    tags: options.tags ?? [],
-  })
-  await item.sign(options.signer)
-  emitProgress(options.onProgress, 'signing', data.length, data.length)
-
-  const raw = Buffer.from(item.getRaw())
-  const localId = item.id || dataItemId(raw)
-
-  return { localId, raw }
-}
-
-async function signStreamDataItem(options: {
-  onProgress: UploadProgressCallback | undefined
-  signer: UploadSigner
-  size: number
-  stream: () => NodeJS.ReadableStream
-  tags: Array<{ name: string; value: string }> | undefined
-}): Promise<{
-  localId: string
-  signedBytes: number
-  stream: () => Readable
-}> {
-  if (!Number.isSafeInteger(options.size) || options.size < 0) {
-    throw new TypeError('uploadStream size must be a non-negative safe integer')
-  }
-
-  const header = createData(Buffer.alloc(0), options.signer, {
-    tags: options.tags ?? [],
-  })
-  const hash = await deepHash([
-    stringToBuffer('dataitem'),
-    stringToBuffer('1'),
-    stringToBuffer(header.signatureType.toString()),
-    header.rawOwner,
-    header.rawTarget,
-    header.rawAnchor,
-    header.rawTags,
-    progressReadable(
-      toReadable(options.stream()),
-      'signing',
-      options.size,
-      options.onProgress,
-    ),
-  ])
-  const sigBytes = Buffer.from(await options.signer.sign(hash))
-  await header.setSignature(sigBytes)
-
-  const headerBytes = Buffer.from(header.getRaw())
-  const localId =
-    header.id || createHash('sha256').update(sigBytes).digest('base64url')
-
-  return {
-    localId,
-    signedBytes: headerBytes.length + options.size,
-    stream: () =>
-      progressReadable(
-        Readable.from(signedStream(headerBytes, toReadable(options.stream()))),
-        'uploading',
-        headerBytes.length + options.size,
-        options.onProgress,
-      ),
-  }
-}
-
-async function* signedStream(
-  header: Buffer,
-  stream: Readable,
-): AsyncGenerator<Buffer | string | Uint8Array> {
-  yield header
-  for await (const chunk of stream) {
-    yield chunk as Buffer | string | Uint8Array
-  }
-}
-
-function toReadable(stream: NodeJS.ReadableStream): Readable {
-  if (stream instanceof Readable) return stream
-  return Readable.from(stream)
-}
-
-function progressReadable(
-  stream: Readable,
-  phase: 'signing' | 'uploading',
-  total: number,
-  onProgress: UploadProgressCallback | undefined,
-): Readable {
-  if (!onProgress) return stream
-
-  async function* track(): AsyncGenerator<Buffer | string | Uint8Array> {
-    let loaded = 0
-    emitProgress(onProgress, phase, loaded, total)
-
-    for await (const chunk of stream) {
-      loaded += chunkByteLength(chunk)
-      emitProgress(onProgress, phase, Math.min(loaded, total), total)
-      yield chunk as Buffer | string | Uint8Array
-    }
-
-    if (loaded < total) {
-      emitProgress(onProgress, phase, total, total)
-    }
-  }
-
-  return Readable.from(track())
-}
-
-function emitProgress(
-  onProgress: UploadProgressCallback | undefined,
-  phase: 'signing' | 'uploading',
-  loaded: number,
-  total: number,
-): void {
-  onProgress?.({ loaded, phase, total })
-}
-
-function chunkByteLength(chunk: unknown): number {
-  if (typeof chunk === 'string') return Buffer.byteLength(chunk)
-  if (chunk instanceof ArrayBuffer) return chunk.byteLength
-  if (ArrayBuffer.isView(chunk)) return chunk.byteLength
-  return Buffer.byteLength(String(chunk))
-}
-
-async function folderFiles(folder: string): Promise<FolderFile[]> {
-  const root = path.resolve(folder)
-  const rootStat = await stat(root)
-
-  if (!rootStat.isDirectory()) {
-    throw new TypeError(`uploadFolder expected a directory: ${folder}`)
-  }
-
-  const files: FolderFile[] = []
-  await collectFolderFiles(root, root, files)
-  files.sort((left, right) => left.path.localeCompare(right.path))
-
-  if (files.length === 0) {
-    throw new Error(`uploadFolder expected at least one file: ${folder}`)
-  }
-
-  return files
-}
-
-async function collectFolderFiles(
-  root: string,
-  current: string,
-  files: FolderFile[],
-): Promise<void> {
-  const entries = await readdir(current, { withFileTypes: true })
-  entries.sort((left, right) => left.name.localeCompare(right.name))
-
-  for (const entry of entries) {
-    const absolutePath = path.join(current, entry.name)
-
-    if (entry.isDirectory()) {
-      await collectFolderFiles(root, absolutePath, files)
-      continue
-    }
-
-    if (!entry.isFile()) continue
-
-    files.push({
-      absolutePath,
-      path: normalizeManifestPath(path.relative(root, absolutePath)),
-    })
-  }
-}
-
-function folderManifest(options: {
-  fallbackFile: string | undefined
-  files: Record<string, string>
-  indexFile: string | undefined
-}): {
-  fallback: { id: string }
-  index: { path: string }
-  manifest: 'arweave/paths'
-  paths: Record<string, { id: string }>
-  version: '0.2.0'
-} {
-  const paths = Object.fromEntries(
-    Object.entries(options.files).map(([filePath, id]) => [filePath, { id }]),
-  )
-  const indexPath = normalizeIndexPath(options.files, options.indexFile)
-  const fallbackId = normalizeFallbackId({
-    fallbackFile: options.fallbackFile,
-    files: options.files,
-    indexPath,
-  })
-
-  return {
-    fallback: { id: fallbackId },
-    index: { path: indexPath },
-    manifest: 'arweave/paths',
-    paths,
-    version: '0.2.0',
-  }
-}
-
-function normalizeIndexPath(
-  files: Record<string, string>,
-  indexFile: string | undefined,
-): string {
-  if (indexFile !== undefined) {
-    const indexPath = normalizeManifestPath(indexFile)
-    if (files[indexPath]) return indexPath
-  }
-
-  if (files['index.html']) return 'index.html'
-
-  const [firstPath] = Object.keys(files)
-  if (!firstPath)
-    throw new Error('Cannot create a manifest for an empty folder')
-  return firstPath
-}
-
-function normalizeFallbackId(options: {
-  fallbackFile: string | undefined
-  files: Record<string, string>
-  indexPath: string
-}): string {
-  if (options.fallbackFile !== undefined) {
-    const fallbackPath = normalizeManifestPath(options.fallbackFile)
-    if (options.files[fallbackPath]) return options.files[fallbackPath]
-  }
-
-  return options.files['404.html'] ?? options.files[options.indexPath]
-}
-
-function normalizeManifestPath(filePath: string): string {
-  return filePath
-    .split(path.sep)
-    .join('/')
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-}
-
-function tagsWithContentType(
-  tags: Array<{ name: string; value: string }> | undefined,
-  contentType: string,
-): Array<{ name: string; value: string }> {
-  if (tags?.some((tag) => tag.name.toLowerCase() === 'content-type')) {
-    return tags
-  }
-
-  return [...(tags ?? []), { name: 'Content-Type', value: contentType }]
-}
-
-function contentTypeForPath(filePath: string): string {
-  const extension = path.extname(filePath).toLowerCase()
-
-  return (
-    {
-      '.avif': 'image/avif',
-      '.css': 'text/css',
-      '.gif': 'image/gif',
-      '.html': 'text/html',
-      '.ico': 'image/x-icon',
-      '.jpeg': 'image/jpeg',
-      '.jpg': 'image/jpeg',
-      '.js': 'text/javascript',
-      '.json': 'application/json',
-      '.mjs': 'text/javascript',
-      '.pdf': 'application/pdf',
-      '.png': 'image/png',
-      '.svg': 'image/svg+xml',
-      '.txt': 'text/plain',
-      '.wasm': 'application/wasm',
-      '.webm': 'video/webm',
-      '.webp': 'image/webp',
-      '.xml': 'application/xml',
-    }[extension] ?? 'application/octet-stream'
-  )
-}
-
 function addOptionalCost(
   current: bigint | undefined,
   next: bigint | undefined,
@@ -862,10 +552,6 @@ function addOptionalCost(
 function requestBodyLength(body: Buffer | Readable): number {
   if (Buffer.isBuffer(body)) return body.length
   throw new TypeError('contentLength is required when uploading a stream body')
-}
-
-function dataItemId(raw: Buffer): string {
-  return toBase64Url(new DataItem(raw).id)
 }
 
 async function quoteUpload(options: {
