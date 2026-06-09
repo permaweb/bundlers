@@ -73,6 +73,15 @@ export interface UploadOptions {
   uploader?: string
 }
 
+export interface UploadFileOptions extends Omit<UploadOptions, 'data'> {
+  file: string
+}
+
+export interface UploadStreamOptions extends Omit<UploadOptions, 'data'> {
+  size: number
+  stream: () => NodeJS.ReadableStream
+}
+
 export interface UploadSignedDataItemOptions {
   dataItem: ArrayBuffer | Uint8Array
   fetch?: typeof fetch

@@ -1,4 +1,8 @@
 import { generateKeyPairSync } from 'node:crypto'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Readable } from 'node:stream'
 
 import { describe, expect, it, vi } from 'vitest'
 
@@ -6,7 +10,9 @@ import {
   ArweaveSigner,
   legacy_upload,
   upload,
+  uploadFile,
   uploadSignedDataItem,
+  uploadStream,
 } from './index.js'
 
 function testJwk(): Record<string, unknown> {
@@ -124,6 +130,99 @@ describe('upload', () => {
       id: 'signed-upload-id',
       uploader: 'https://hyperbeam.test',
     })
+  })
+
+  it('uploads a signed stream without buffering the payload in the SDK', async () => {
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        const href = String(url)
+
+        if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+          return new Response('node-address')
+        }
+
+        if (href === 'https://arweave.net/wallet/node-address/balance') {
+          return new Response('1')
+        }
+
+        if (
+          href ===
+          'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+        ) {
+          expect(init?.method).toBe('POST')
+          expect(init?.headers).toMatchObject({
+            'content-type': 'application/octet-stream',
+          })
+          expect(
+            Number((init?.headers as Record<string, string>)['content-length']),
+          ).toBeGreaterThan('stream payload'.length)
+          expect(init?.body).toBeInstanceOf(Readable)
+          return new Response('{}')
+        }
+
+        return new Response('not found', { status: 404 })
+      },
+    )
+
+    const result = await uploadStream({
+      fetch: fetch as typeof globalThis.fetch,
+      signer: new ArweaveSigner(testJwk()),
+      size: 'stream payload'.length,
+      stream: () => Readable.from(['stream payload']),
+      tags: [{ name: 'Content-Type', value: 'text/plain' }],
+      uploader: 'https://hyperbeam.test',
+    })
+
+    expect(result.id).toMatch(/^[a-zA-Z0-9_-]+$/)
+    expect(result.uploader).toBe('https://hyperbeam.test')
+  })
+
+  it('uploads a signed file using a fresh stream body', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bundlers-upload-file-'))
+    const file = join(dir, 'payload.txt')
+    await writeFile(file, 'file payload')
+
+    try {
+      const fetch = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          const href = String(url)
+
+          if (href === 'https://hyperbeam.test/~meta@1.0/info/address') {
+            return new Response('node-address')
+          }
+
+          if (href === 'https://arweave.net/wallet/node-address/balance') {
+            return new Response('1')
+          }
+
+          if (
+            href ===
+            'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
+          ) {
+            expect(init?.method).toBe('POST')
+            expect(init?.body).toBeInstanceOf(Readable)
+            return new Response(JSON.stringify({ id: 'file-upload-id' }))
+          }
+
+          return new Response('not found', { status: 404 })
+        },
+      )
+
+      await expect(
+        uploadFile({
+          fetch: fetch as typeof globalThis.fetch,
+          file,
+          signer: new ArweaveSigner(testJwk()),
+          tags: [{ name: 'Content-Type', value: 'text/plain' }],
+          uploader: 'https://hyperbeam.test',
+        }),
+      ).resolves.toEqual({
+        id: 'file-upload-id',
+        uploader: 'https://hyperbeam.test',
+      })
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 
   it('retries transient HyperBEAM upload failures', async () => {

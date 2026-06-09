@@ -1,5 +1,8 @@
 import { createHash, randomInt } from 'node:crypto'
+import { createReadStream } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
+import { Readable } from 'node:stream'
 
 import { message as aoMessage } from '@permaweb/aoconnect'
 import {
@@ -17,26 +20,39 @@ import {
 import type {
   LegacyUploadOptions,
   UploadAutoFundOptions,
+  UploadFileOptions,
   UploadOptions,
   UploadResult,
   UploadRetryOptions,
   UploadSigner,
   UploadSignedDataItemOptions,
+  UploadStreamOptions,
 } from './types.js'
 
 const require = createRequire(import.meta.url)
-const { DataItem, createData } = require('@dha-team/arbundles') as {
-  DataItem: new (raw: Buffer) => { id: string | Uint8Array }
-  createData: (
-    data: Buffer,
-    signer: UploadSigner,
-    opts?: { tags?: Array<{ name: string; value: string }> },
-  ) => {
-    getRaw: () => Uint8Array
-    id?: string
-    sign: (signer: UploadSigner) => Promise<void>
+const { DataItem, createData, deepHash, stringToBuffer } =
+  require('@dha-team/arbundles') as {
+    DataItem: new (raw: Buffer) => { id: string | Uint8Array }
+    createData: (
+      data: Buffer,
+      signer: UploadSigner,
+      opts?: { tags?: Array<{ name: string; value: string }> },
+    ) => {
+      getRaw: () => Uint8Array
+      id?: string
+      sign: (signer: UploadSigner) => Promise<void>
+      rawAnchor: Buffer
+      rawOwner: Buffer
+      rawTags: Buffer
+      rawTarget: Buffer
+      setSignature: (signature: Buffer) => Promise<void>
+      signatureType: number
+    }
+    deepHash: (
+      chunks: Array<Buffer | Readable | Uint8Array>,
+    ) => Promise<Uint8Array>
+    stringToBuffer: (value: string) => Buffer
   }
-}
 
 const ARWEAVE_GATEWAY = 'https://arweave.net'
 const ARWEAVE_OWNER_LENGTH = 512
@@ -116,10 +132,100 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   if (options.retry !== undefined) postOptions.retry = options.retry
   if (options.signal) postOptions.signal = options.signal
 
-  const posted = await postDataItem(uploadUrl, signed.raw, postOptions)
+  const posted = await postDataItem(uploadUrl, () => signed.raw, postOptions)
 
   return {
-    ...(cost ? { cost, currency: 'AO' as const } : {}),
+    ...(cost !== undefined ? { cost, currency: 'AO' as const } : {}),
+    id: posted.id || signed.localId,
+    uploader,
+  }
+}
+
+export async function uploadFile(
+  options: UploadFileOptions,
+): Promise<UploadResult> {
+  const { file, ...streamOptions } = options
+  const fileStat = await stat(file)
+
+  if (!fileStat.isFile()) {
+    throw new TypeError(`uploadFile expected a regular file: ${file}`)
+  }
+
+  return uploadStream({
+    ...streamOptions,
+    size: fileStat.size,
+    stream: () => createReadStream(file),
+  })
+}
+
+export async function uploadStream(
+  options: UploadStreamOptions,
+): Promise<UploadResult> {
+  const fetchImpl = options.fetch ?? fetch
+  const selectionOptions: Parameters<typeof selectBundler>[0] = {
+    fetch: fetchImpl,
+  }
+  if (options.selection?.endpoint)
+    selectionOptions.endpoint = options.selection.endpoint
+  if (options.selection?.pid) selectionOptions.pid = options.selection.pid
+
+  const uploader = options.uploader ?? (await selectBundler(selectionOptions))
+  assertArweaveSigner(options.signer)
+
+  const signed = await signStreamDataItem({
+    signer: options.signer,
+    size: options.size,
+    stream: options.stream,
+    tags: options.tags,
+  })
+  const autoFund = normalizeAutoFundOptions(options.autoFund)
+  let autoFundUnavailable: string | undefined
+  let cost: bigint | undefined
+  let quote: Quote | undefined
+
+  if (autoFund) {
+    try {
+      quote = await quoteUpload({
+        autoFund,
+        fetch: fetchImpl,
+        signedBytes: signed.signedBytes,
+        uploader,
+      })
+      cost = quote.amount
+    } catch (error) {
+      autoFundUnavailable = cleanErrorMessage(error)
+    }
+  }
+
+  await preflightBundlerArBalance(uploader, fetchImpl, options.signal)
+
+  if (autoFund && quote) {
+    await ensureUploadCredit({
+      autoFund,
+      fetch: fetchImpl,
+      quote,
+      signer: options.signer,
+      uploader,
+    })
+  }
+
+  const uploadUrl = hyperbeamUploadUrl(
+    uploader,
+    options.uploadPath ?? DEFAULT_HYPERBEAM_UPLOAD_PATH,
+  )
+  const postOptions: Parameters<typeof postDataItem>[2] = {
+    contentLength: signed.signedBytes,
+    fetch: fetchImpl,
+    localId: signed.localId,
+  }
+  if (autoFundUnavailable) postOptions.paymentContext = autoFundUnavailable
+  if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.signal) postOptions.signal = options.signal
+
+  const posted = await postDataItem(uploadUrl, signed.stream, postOptions)
+
+  return {
+    ...(cost !== undefined ? { cost, currency: 'AO' as const } : {}),
     id: posted.id || signed.localId,
     uploader,
   }
@@ -153,7 +259,7 @@ export async function uploadSignedDataItem(
   if (options.retry !== undefined) postOptions.retry = options.retry
   if (options.signal) postOptions.signal = options.signal
 
-  const posted = await postDataItem(uploadUrl, raw, postOptions)
+  const posted = await postDataItem(uploadUrl, () => raw, postOptions)
 
   return {
     id: posted.id || localId,
@@ -330,6 +436,63 @@ async function signDataItem(options: {
   return { localId, raw }
 }
 
+async function signStreamDataItem(options: {
+  signer: UploadSigner
+  size: number
+  stream: () => NodeJS.ReadableStream
+  tags: Array<{ name: string; value: string }> | undefined
+}): Promise<{
+  localId: string
+  signedBytes: number
+  stream: () => Readable
+}> {
+  if (!Number.isSafeInteger(options.size) || options.size < 0) {
+    throw new TypeError('uploadStream size must be a non-negative safe integer')
+  }
+
+  const header = createData(Buffer.alloc(0), options.signer, {
+    tags: options.tags ?? [],
+  })
+  const hash = await deepHash([
+    stringToBuffer('dataitem'),
+    stringToBuffer('1'),
+    stringToBuffer(header.signatureType.toString()),
+    header.rawOwner,
+    header.rawTarget,
+    header.rawAnchor,
+    header.rawTags,
+    toReadable(options.stream()),
+  ])
+  const sigBytes = Buffer.from(await options.signer.sign(hash))
+  await header.setSignature(sigBytes)
+
+  const headerBytes = Buffer.from(header.getRaw())
+  const localId =
+    header.id || createHash('sha256').update(sigBytes).digest('base64url')
+
+  return {
+    localId,
+    signedBytes: headerBytes.length + options.size,
+    stream: () =>
+      Readable.from(signedStream(headerBytes, toReadable(options.stream()))),
+  }
+}
+
+async function* signedStream(
+  header: Buffer,
+  stream: Readable,
+): AsyncGenerator<Buffer | string | Uint8Array> {
+  yield header
+  for await (const chunk of stream) {
+    yield chunk as Buffer | string | Uint8Array
+  }
+}
+
+function toReadable(stream: NodeJS.ReadableStream): Readable {
+  if (stream instanceof Readable) return stream
+  return Readable.from(stream)
+}
+
 function dataItemId(raw: Buffer): string {
   return toBase64Url(new DataItem(raw).id)
 }
@@ -487,8 +650,9 @@ function createAoDataItemSigner(
 
 async function postDataItem(
   uploadUrl: string,
-  raw: Buffer,
+  body: () => Buffer | Readable,
   options: {
+    contentLength?: number
     fetch: typeof fetch
     localId: string
     paymentContext?: string
@@ -497,28 +661,35 @@ async function postDataItem(
   },
 ): Promise<{ id?: string }> {
   return withRetry(options.retry, options.signal, async () => {
-    const res = await options.fetch(uploadUrl, {
-      body: raw as unknown as BodyInit,
+    const requestBody = body()
+    const init: RequestInit & { duplex?: 'half' } = {
+      body: requestBody as unknown as BodyInit,
       headers: {
         accept: 'application/json, text/plain, */*',
+        ...(options.contentLength !== undefined
+          ? { 'content-length': String(options.contentLength) }
+          : {}),
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
       ...(options.signal ? { signal: options.signal } : {}),
-    })
-    const body = await res.text()
+    }
+    if (requestBody instanceof Readable) init.duplex = 'half'
+
+    const res = await options.fetch(uploadUrl, init)
+    const responseBody = await res.text()
 
     if (!res.ok) {
       const context = options.paymentContext
         ? `\n\nAuto-fund compatibility check failed: ${options.paymentContext}\nAttempted direct upload instead.`
         : ''
       throw new UploadRequestError(
-        `HyperBEAM bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}${context}`,
+        `HyperBEAM bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(responseBody)}${context}`,
         res.status,
       )
     }
 
-    const id = responseId(res.headers, body)
+    const id = responseId(res.headers, responseBody)
     return id ? { id } : {}
   })
 }

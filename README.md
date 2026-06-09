@@ -28,6 +28,31 @@ console.log(result.cost) // raw AO base units as a bigint
 console.log(result.currency) // 'AO'
 ```
 
+### upload files and streams
+
+Use `uploadFile()` for local files and `uploadStream()` when the payload should
+not be buffered fully in memory. Stream uploads need a fresh readable stream for
+each call and the raw payload size in bytes.
+
+```ts
+import { uploadFile, uploadStream } from '@permaweb/bundlers'
+
+await uploadFile({
+  autoFund: true,
+  file: './video.mp4',
+  signer,
+  tags: [{ name: 'Content-Type', value: 'video/mp4' }],
+})
+
+await uploadStream({
+  autoFund: true,
+  signer,
+  size,
+  stream: () => fs.createReadStream(path),
+  tags,
+})
+```
+
 ### upload signed dataitem
 
 Upload an already-signed ANS-104 data item:
