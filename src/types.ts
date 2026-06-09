@@ -103,3 +103,18 @@ export interface LegacyUploadOptions {
   token?: string
   uploader?: string
 }
+
+export interface LegacyUploadFileOptions extends Omit<
+  LegacyUploadOptions,
+  'data'
+> {
+  file: string
+}
+
+export interface LegacyUploadStreamOptions extends Omit<
+  LegacyUploadOptions,
+  'data'
+> {
+  size: number
+  stream: () => NodeJS.ReadableStream
+}

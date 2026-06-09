@@ -9,6 +9,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   ArweaveSigner,
   legacy_upload,
+  legacy_uploadFile,
+  legacy_uploadStream,
   upload,
   uploadFile,
   uploadSignedDataItem,
@@ -90,6 +92,69 @@ describe('upload', () => {
       id: 'legacy-uploaded-item-id',
       uploader: 'https://up.arweave.net',
     })
+  })
+
+  it('uploads a signed stream to the default legacy uploader', async () => {
+    const fetch = vi.fn(
+      async (url: string | URL | Request, init?: RequestInit) => {
+        expect(String(url)).toBe('https://up.arweave.net/v1/tx/arweave')
+        expect(init?.method).toBe('POST')
+        expect(init?.headers).toMatchObject({
+          'content-type': 'application/octet-stream',
+        })
+        expect(
+          Number((init?.headers as Record<string, string>)['content-length']),
+        ).toBeGreaterThan('legacy stream'.length)
+        expect(init?.body).toBeInstanceOf(Readable)
+
+        return new Response(JSON.stringify({ id: 'legacy-stream-upload-id' }))
+      },
+    )
+
+    await expect(
+      legacy_uploadStream({
+        fetch: fetch as typeof globalThis.fetch,
+        signer: new ArweaveSigner(testJwk()),
+        size: 'legacy stream'.length,
+        stream: () => Readable.from(['legacy stream']),
+        tags: [{ name: 'Content-Type', value: 'text/plain' }],
+      }),
+    ).resolves.toEqual({
+      id: 'legacy-stream-upload-id',
+      uploader: 'https://up.arweave.net',
+    })
+  })
+
+  it('uploads a signed file to the default legacy uploader', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bundlers-legacy-upload-file-'))
+    const file = join(dir, 'payload.txt')
+    await writeFile(file, 'legacy file payload')
+
+    try {
+      const fetch = vi.fn(
+        async (url: string | URL | Request, init?: RequestInit) => {
+          expect(String(url)).toBe('https://up.arweave.net/v1/tx/arweave')
+          expect(init?.method).toBe('POST')
+          expect(init?.body).toBeInstanceOf(Readable)
+
+          return new Response(JSON.stringify({ id: 'legacy-file-upload-id' }))
+        },
+      )
+
+      await expect(
+        legacy_uploadFile({
+          fetch: fetch as typeof globalThis.fetch,
+          file,
+          signer: new ArweaveSigner(testJwk()),
+          tags: [{ name: 'Content-Type', value: 'text/plain' }],
+        }),
+      ).resolves.toEqual({
+        id: 'legacy-file-upload-id',
+        uploader: 'https://up.arweave.net',
+      })
+    } finally {
+      await rm(dir, { recursive: true })
+    }
   })
 
   it('uploads an already-signed ANS-104 item to a pinned HyperBEAM uploader', async () => {

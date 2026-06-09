@@ -18,7 +18,9 @@ import {
   type ActivePermawebOSBundler,
 } from './permawebos-bundlers.js'
 import type {
+  LegacyUploadFileOptions,
   LegacyUploadOptions,
+  LegacyUploadStreamOptions,
   UploadAutoFundOptions,
   UploadFileOptions,
   UploadOptions,
@@ -290,7 +292,60 @@ export async function legacy_upload(
   if (options.retry !== undefined) postOptions.retry = options.retry
   if (options.signal) postOptions.signal = options.signal
 
-  const posted = await postLegacyDataItem(uploadUrl, signed.raw, postOptions)
+  const posted = await postLegacyDataItem(uploadUrl, () => signed.raw, {
+    ...postOptions,
+    contentLength: signed.raw.length,
+  })
+
+  return {
+    id: posted.id || signed.localId,
+    uploader,
+  }
+}
+
+export async function legacy_uploadFile(
+  options: LegacyUploadFileOptions,
+): Promise<UploadResult> {
+  const { file, ...streamOptions } = options
+  const fileStat = await stat(file)
+
+  if (!fileStat.isFile()) {
+    throw new TypeError(`legacy_uploadFile expected a regular file: ${file}`)
+  }
+
+  return legacy_uploadStream({
+    ...streamOptions,
+    size: fileStat.size,
+    stream: () => createReadStream(file),
+  })
+}
+
+export async function legacy_uploadStream(
+  options: LegacyUploadStreamOptions,
+): Promise<UploadResult> {
+  const fetchImpl = options.fetch ?? fetch
+  const uploader = options.uploader ?? DEFAULT_LEGACY_UPLOADER
+  assertArweaveSigner(options.signer)
+
+  const signed = await signStreamDataItem({
+    signer: options.signer,
+    size: options.size,
+    stream: options.stream,
+    tags: options.tags,
+  })
+  const uploadUrl = legacyUploadUrl(
+    uploader,
+    options.token ?? DEFAULT_LEGACY_TOKEN,
+  )
+  const postOptions: Parameters<typeof postLegacyDataItem>[2] = {
+    contentLength: signed.signedBytes,
+    fetch: fetchImpl,
+    localId: signed.localId,
+  }
+  if (options.retry !== undefined) postOptions.retry = options.retry
+  if (options.signal) postOptions.signal = options.signal
+
+  const posted = await postLegacyDataItem(uploadUrl, signed.stream, postOptions)
 
   return {
     id: posted.id || signed.localId,
@@ -491,6 +546,11 @@ async function* signedStream(
 function toReadable(stream: NodeJS.ReadableStream): Readable {
   if (stream instanceof Readable) return stream
   return Readable.from(stream)
+}
+
+function requestBodyLength(body: Buffer | Readable): number {
+  if (Buffer.isBuffer(body)) return body.length
+  throw new TypeError('contentLength is required when uploading a stream body')
 }
 
 function dataItemId(raw: Buffer): string {
@@ -696,8 +756,9 @@ async function postDataItem(
 
 async function postLegacyDataItem(
   uploadUrl: string,
-  raw: Buffer,
+  body: () => Buffer | Readable,
   options: {
+    contentLength?: number
     fetch: typeof fetch
     localId: string
     retry?: boolean | UploadRetryOptions
@@ -705,25 +766,31 @@ async function postLegacyDataItem(
   },
 ): Promise<{ id?: string }> {
   return withRetry(options.retry, options.signal, async () => {
-    const res = await options.fetch(uploadUrl, {
-      body: raw as unknown as BodyInit,
+    const requestBody = body()
+    const init: RequestInit & { duplex?: 'half' } = {
+      body: requestBody as unknown as BodyInit,
       headers: {
-        'content-length': String(raw.length),
+        'content-length': String(
+          options.contentLength ?? requestBodyLength(requestBody),
+        ),
         'content-type': 'application/octet-stream',
       },
       method: 'POST',
       ...(options.signal ? { signal: options.signal } : {}),
-    })
-    const body = await res.text()
+    }
+    if (requestBody instanceof Readable) init.duplex = 'half'
+
+    const res = await options.fetch(uploadUrl, init)
+    const responseBody = await res.text()
 
     if (!res.ok) {
       throw new UploadRequestError(
-        `Legacy bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(body)}`,
+        `Legacy bundler upload failed for local data item ${options.localId} with HTTP ${res.status}${responsePreview(responseBody)}`,
         res.status,
       )
     }
 
-    const id = responseId(res.headers, body)
+    const id = responseId(res.headers, responseBody)
     return id ? { id } : {}
   })
 }

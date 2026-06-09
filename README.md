@@ -145,13 +145,35 @@ through `@permaweb/aoconnect`.
 Legacy bundlers are supported through `legacy_upload()`. It does not run HyperBEAM discovery or funding.
 
 ```ts
-import { ArweaveSigner, legacy_upload } from '@permaweb/bundlers'
+import {
+  ArweaveSigner,
+  legacy_upload,
+  legacy_uploadFile,
+  legacy_uploadStream,
+} from '@permaweb/bundlers'
 
 const signer = new ArweaveSigner(jwk)
 
 const result = await legacy_upload({
   data,
   signer,
+  tags,
+})
+```
+
+Legacy file and stream uploads are also available:
+
+```ts
+await legacy_uploadFile({
+  file: './video.mp4',
+  signer,
+  tags,
+})
+
+await legacy_uploadStream({
+  signer,
+  size,
+  stream: () => fs.createReadStream(path),
   tags,
 })
 ```
