@@ -1,6 +1,6 @@
 {
   "name": "@permaweb/bundlers",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Permaweb bundler funding and ANS-104 upload SDK",
   "type": "module",
   "main": "./dist/index.js",
