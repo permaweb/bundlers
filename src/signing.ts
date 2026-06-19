@@ -49,7 +49,7 @@ export async function signDataItem(options: {
   onProgress: UploadProgressCallback | undefined
   signer: UploadSigner
   tags: Array<{ name: string; value: string }> | undefined
-}): Promise<{ localId: string; raw: Buffer }> {
+}): Promise<{ localId: string; payloadBytes: number; raw: Buffer }> {
   const data = toBuffer(options.data)
   emitProgress(options.onProgress, 'signing', 0, data.length)
   const item = createData(data, options.signer, {
@@ -61,7 +61,7 @@ export async function signDataItem(options: {
   const raw = Buffer.from(item.getRaw())
   const localId = item.id || dataItemId(raw)
 
-  return { localId, raw }
+  return { localId, payloadBytes: data.length, raw }
 }
 
 export async function signStreamDataItem(options: {

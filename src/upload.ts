@@ -133,6 +133,10 @@ export async function upload(options: UploadOptions): Promise<UploadResult> {
   return {
     ...(cost !== undefined ? { cost, currency: 'AO' as const } : {}),
     id: posted.id || signed.localId,
+    size: {
+      payloadBytes: signed.payloadBytes,
+      signedBytes: signed.raw.length,
+    },
     uploader,
   }
 }
@@ -159,6 +163,7 @@ export async function uploadFolder(
 ): Promise<UploadFolderResult> {
   const files = await folderFiles(options.folder)
   const uploadedFiles: Record<string, string> = {}
+  let totalSize: UploadResult['size'] | undefined
   let totalCost: bigint | undefined
   let uploader: string | undefined
 
@@ -171,6 +176,7 @@ export async function uploadFolder(
     uploadedFiles[file.path] = result.id
     uploader = result.uploader
     totalCost = addOptionalCost(totalCost, result.cost)
+    totalSize = addOptionalSize(totalSize, result.size)
   }
 
   const manifest = folderManifest({
@@ -184,6 +190,7 @@ export async function uploadFolder(
     tags: tagsWithContentType(options.manifestTags, MANIFEST_CONTENT_TYPE),
   })
   totalCost = addOptionalCost(totalCost, manifestResult.cost)
+  totalSize = addOptionalSize(totalSize, manifestResult.size)
 
   return {
     ...(totalCost !== undefined
@@ -191,6 +198,7 @@ export async function uploadFolder(
       : {}),
     files: uploadedFiles,
     id: manifestResult.id,
+    ...(totalSize ? { size: totalSize } : {}),
     uploader: manifestResult.uploader || uploader || '',
   }
 }
@@ -266,6 +274,10 @@ export async function uploadStream(
   return {
     ...(cost !== undefined ? { cost, currency: 'AO' as const } : {}),
     id: posted.id || signed.localId,
+    size: {
+      payloadBytes: options.size,
+      signedBytes: signed.signedBytes,
+    },
     uploader,
   }
 }
@@ -303,6 +315,9 @@ export async function uploadSignedDataItem(
 
   return {
     id: posted.id || localId,
+    size: {
+      signedBytes: raw.length,
+    },
     uploader,
   }
 }
@@ -339,6 +354,10 @@ export async function legacy_upload(
 
   return {
     id: posted.id || signed.localId,
+    size: {
+      payloadBytes: signed.payloadBytes,
+      signedBytes: signed.raw.length,
+    },
     uploader,
   }
 }
@@ -365,6 +384,7 @@ export async function legacy_uploadFolder(
 ): Promise<UploadFolderResult> {
   const files = await folderFiles(options.folder)
   const uploadedFiles: Record<string, string> = {}
+  let totalSize: UploadResult['size'] | undefined
   let uploader: string | undefined
 
   for (const file of files) {
@@ -375,6 +395,7 @@ export async function legacy_uploadFolder(
     })
     uploadedFiles[file.path] = result.id
     uploader = result.uploader
+    totalSize = addOptionalSize(totalSize, result.size)
   }
 
   const manifest = folderManifest({
@@ -387,10 +408,12 @@ export async function legacy_uploadFolder(
     data: JSON.stringify(manifest),
     tags: tagsWithContentType(options.manifestTags, MANIFEST_CONTENT_TYPE),
   })
+  totalSize = addOptionalSize(totalSize, manifestResult.size)
 
   return {
     files: uploadedFiles,
     id: manifestResult.id,
+    ...(totalSize ? { size: totalSize } : {}),
     uploader: manifestResult.uploader || uploader || '',
   }
 }
@@ -426,6 +449,10 @@ export async function legacy_uploadStream(
 
   return {
     id: posted.id || signed.localId,
+    size: {
+      payloadBytes: options.size,
+      signedBytes: signed.signedBytes,
+    },
     uploader,
   }
 }
@@ -547,6 +574,22 @@ function addOptionalCost(
 ): bigint | undefined {
   if (next === undefined) return current
   return (current ?? 0n) + next
+}
+
+function addOptionalSize(
+  current: UploadResult['size'] | undefined,
+  next: UploadResult['size'] | undefined,
+): UploadResult['size'] | undefined {
+  if (next === undefined) return current
+
+  return {
+    ...(current?.payloadBytes !== undefined || next.payloadBytes !== undefined
+      ? {
+          payloadBytes: (current?.payloadBytes ?? 0) + (next.payloadBytes ?? 0),
+        }
+      : {}),
+    signedBytes: (current?.signedBytes ?? 0) + next.signedBytes,
+  }
 }
 
 function requestBodyLength(body: Buffer | Readable): number {

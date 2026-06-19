@@ -8,7 +8,13 @@ export interface UploadResult {
   cost?: bigint
   currency?: 'AO'
   id: string
+  size?: UploadSize
   uploader: string
+}
+
+export interface UploadSize {
+  payloadBytes?: number
+  signedBytes: number
 }
 
 export interface UploadFolderResult extends UploadResult {
