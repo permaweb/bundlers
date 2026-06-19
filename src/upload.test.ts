@@ -19,13 +19,45 @@ import {
   uploadStream,
 } from './index.js'
 
-function testJwk(): Record<string, unknown> {
+interface TestJwk {
+  kty: string
+  e: string
+  n: string
+  d?: string
+  p?: string
+  q?: string
+  dp?: string
+  dq?: string
+  qi?: string
+}
+
+function testJwk(): TestJwk {
   const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 4096,
     publicExponent: 0x10001,
   })
 
-  return privateKey.export({ format: 'jwk' }) as Record<string, unknown>
+  return privateKey.export({ format: 'jwk' }) as TestJwk
+}
+
+function uploadSize(payloadBytes: number) {
+  return {
+    payloadBytes,
+    signedBytes: expect.any(Number),
+  }
+}
+
+function anyUploadSize() {
+  return {
+    payloadBytes: expect.any(Number),
+    signedBytes: expect.any(Number),
+  }
+}
+
+function signedUploadSize() {
+  return {
+    signedBytes: expect.any(Number),
+  }
 }
 
 describe('upload', () => {
@@ -106,6 +138,7 @@ describe('upload', () => {
       }),
     ).resolves.toEqual({
       id: 'uploaded-item-id',
+      size: uploadSize(5),
       uploader: 'https://hyperbeam.test',
     })
   })
@@ -133,6 +166,7 @@ describe('upload', () => {
       }),
     ).resolves.toEqual({
       id: 'legacy-uploaded-item-id',
+      size: uploadSize(5),
       uploader: 'https://up.arweave.net',
     })
   })
@@ -164,6 +198,7 @@ describe('upload', () => {
       }),
     ).resolves.toEqual({
       id: 'legacy-stream-upload-id',
+      size: uploadSize('legacy stream'.length),
       uploader: 'https://up.arweave.net',
     })
   })
@@ -193,6 +228,7 @@ describe('upload', () => {
         }),
       ).resolves.toEqual({
         id: 'legacy-file-upload-id',
+        size: uploadSize('legacy file payload'.length),
         uploader: 'https://up.arweave.net',
       })
     } finally {
@@ -269,6 +305,7 @@ describe('upload', () => {
           'index.html': 'index-file-id',
         },
         id: 'manifest-id',
+        size: anyUploadSize(),
         uploader: 'https://hyperbeam.test',
       })
     } finally {
@@ -324,6 +361,7 @@ describe('upload', () => {
           'index.html': 'legacy-index-file-id',
         },
         id: 'legacy-manifest-id',
+        size: anyUploadSize(),
         uploader: 'https://up.arweave.net',
       })
     } finally {
@@ -367,6 +405,7 @@ describe('upload', () => {
       }),
     ).resolves.toEqual({
       id: 'signed-upload-id',
+      size: signedUploadSize(),
       uploader: 'https://hyperbeam.test',
     })
   })
@@ -434,7 +473,7 @@ describe('upload', () => {
           href ===
           'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
         ) {
-          for await (const _chunk of init?.body as Readable) {
+          for await (const _chunk of init?.body as unknown as Readable) {
             // Consume the body so the SDK's upload progress stream is exercised.
           }
           return new Response(JSON.stringify({ id: 'stream-progress-id' }))
@@ -504,6 +543,7 @@ describe('upload', () => {
         }),
       ).resolves.toEqual({
         id: 'file-upload-id',
+        size: uploadSize('file payload'.length),
         uploader: 'https://hyperbeam.test',
       })
     } finally {
@@ -551,8 +591,11 @@ describe('upload', () => {
         fetch: fetch as typeof globalThis.fetch,
         retry: {
           delayMs: 0,
-          onRetry: ({ attempt, status }) =>
-            retryEvents.push({ attempt, status }),
+          onRetry: ({ attempt, status }) => {
+            const event: { attempt: number; status?: number } = { attempt }
+            if (status !== undefined) event.status = status
+            retryEvents.push(event)
+          },
           retries: 1,
         },
         signer: new ArweaveSigner(testJwk()),
@@ -560,6 +603,7 @@ describe('upload', () => {
       }),
     ).resolves.toEqual({
       id: 'retried-upload-id',
+      size: uploadSize(5),
       uploader: 'https://hyperbeam.test',
     })
     expect(retryEvents).toEqual([{ attempt: 1, status: 503 }])

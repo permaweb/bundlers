@@ -1,6 +1,6 @@
 {
   "name": "@permaweb/bundlers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Permaweb bundler funding and ANS-104 upload SDK",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,7 +26,7 @@
   "dependencies": {
     "@dha-team/arbundles": "^1.0.4",
     "@permaweb/aoconnect": "^0.0.85",
-    "@permaweb/hyperbalance": "^0.1.0"
+    "@permaweb/hyperbalance": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
