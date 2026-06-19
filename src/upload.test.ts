@@ -19,13 +19,25 @@ import {
   uploadStream,
 } from './index.js'
 
-function testJwk(): Record<string, unknown> {
+interface TestJwk {
+  kty: string
+  e: string
+  n: string
+  d?: string
+  p?: string
+  q?: string
+  dp?: string
+  dq?: string
+  qi?: string
+}
+
+function testJwk(): TestJwk {
   const { privateKey } = generateKeyPairSync('rsa', {
     modulusLength: 4096,
     publicExponent: 0x10001,
   })
 
-  return privateKey.export({ format: 'jwk' }) as Record<string, unknown>
+  return privateKey.export({ format: 'jwk' }) as TestJwk
 }
 
 function uploadSize(payloadBytes: number) {
@@ -461,7 +473,7 @@ describe('upload', () => {
           href ===
           'https://hyperbeam.test/~bundler@1.0/item?codec-device=ans104@1.0'
         ) {
-          for await (const _chunk of init?.body as Readable) {
+          for await (const _chunk of init?.body as unknown as Readable) {
             // Consume the body so the SDK's upload progress stream is exercised.
           }
           return new Response(JSON.stringify({ id: 'stream-progress-id' }))
@@ -579,8 +591,11 @@ describe('upload', () => {
         fetch: fetch as typeof globalThis.fetch,
         retry: {
           delayMs: 0,
-          onRetry: ({ attempt, status }) =>
-            retryEvents.push({ attempt, status }),
+          onRetry: ({ attempt, status }) => {
+            const event: { attempt: number; status?: number } = { attempt }
+            if (status !== undefined) event.status = status
+            retryEvents.push(event)
+          },
           retries: 1,
         },
         signer: new ArweaveSigner(testJwk()),

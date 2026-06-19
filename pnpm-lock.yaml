@@ -14,8 +14,8 @@ importers:
         specifier: ^0.0.85
         version: 0.0.85
       '@permaweb/hyperbalance':
-        specifier: ^0.1.0
-        version: 0.1.0
+        specifier: ^0.2.0
+        version: 0.2.0
     devDependencies:
       '@types/node':
         specifier: ^22.10.2
@@ -487,10 +487,10 @@ packages:
       }
     engines: { node: '>=18' }
 
-  '@permaweb/hyperbalance@0.1.0':
+  '@permaweb/hyperbalance@0.2.0':
     resolution:
       {
-        integrity: sha512-lg2s4RpEk5UTEzjx4ErIclMZ9zIlAmkesv/PZHxO7xZ/083uQ3wfMaQCi40LbYONlJrzIapA12s6uA74YM6VqQ==,
+        integrity: sha512-U18AFF4Y6n4TFe+fqkATF3XIBmlrgjCNtjS627tlRSsufts9iOdUe2W9ttmvdihUAGIUTpmxBtS4lGIlLCqXNA==,
       }
     engines: { node: '>=18' }
 
@@ -2387,7 +2387,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@permaweb/hyperbalance@0.1.0':
+  '@permaweb/hyperbalance@0.2.0':
     dependencies:
       '@permaweb/aoconnect': 0.0.96
     transitivePeerDependencies:
